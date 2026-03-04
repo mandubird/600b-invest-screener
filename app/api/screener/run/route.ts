@@ -95,16 +95,21 @@ export async function POST(request: NextRequest) {
     ma_below: true,
   };
 
+  // 요청 바디 파싱 (실패 시 400으로 구체적인 에러 반환)
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = await request.json();
     if (body.psr_max != null) filters.psr_max = Number(body.psr_max);
     if (body.cash_min != null) filters.cash_min = Number(body.cash_min);
     if (body.volume_min != null) filters.volume_min = Number(body.volume_min);
     if (body.mktcap_min != null) filters.mktcap_min = Number(body.mktcap_min);
     if (body.low52w_pct != null) filters.low52w_pct = Number(body.low52w_pct);
     if (body.ma_below != null) filters.ma_below = Boolean(body.ma_below);
-  } catch {
-    // use defaults
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return NextResponse.json(
+      { error: "요청 JSON 파싱 실패: " + message },
+      { status: 400 }
+    );
   }
 
   try {
@@ -191,18 +196,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const response = NextResponse.json({
-      list: results,
-      filters,
-      count: results.length,
-    });
+    const response = NextResponse.json(
+      {
+        list: results,
+        filters,
+        count: results.length,
+      },
+      { status: 200 }
+    );
     response.headers.set("Cache-Control", "private, max-age=300");
     return response;
   } catch (e) {
     console.error("Screener run error:", e);
+    const message = e instanceof Error ? e.message : String(e);
+    const isDartError = message.includes("DART") || message.includes("corpCode");
+    const status = isDartError ? 400 : 500;
     return NextResponse.json(
-      { error: "스크리닝 실행 중 오류가 발생했습니다." },
-      { status: 500 }
+      {
+        error: "스크리닝 실행 중 오류: " + message,
+      },
+      { status }
     );
   }
 }
