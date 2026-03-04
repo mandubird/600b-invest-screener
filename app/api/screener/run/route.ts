@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isManaged } from "@/lib/managedStocks";
+import { fetchCompanyList } from "@/lib/dartCompanies";
 
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart";
@@ -107,18 +108,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const listRes = await fetch(
-      `${DART_BASE}/company/list.json?crtfc_key=${encodeURIComponent(key)}&page_no=1&page_count=100`
-    );
-    const listData = await listRes.json();
-    if (listData.status !== "000" || !Array.isArray(listData.list)) {
-      return NextResponse.json(
-        { error: listData.message || "DART 회사 목록 조회 실패" },
-        { status: 400 }
-      );
-    }
-
-    const companies = (listData.list as { corp_code: string; corp_name: string; stock_code: string; corp_cls: string }[])
+    const fullList = await fetchCompanyList(key);
+    const companies = fullList
       .filter((c) => {
         const code = (c.stock_code || "").trim();
         const cls = (c.corp_cls || "").trim();
