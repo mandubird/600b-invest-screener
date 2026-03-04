@@ -38,7 +38,7 @@ DART API 키가 없으면 **데모 결과 보기**로 샘플 데이터만 확인
 
 ```bash
 # .env.local
-DART_API_KEY=발급받은_40자리_인증키
+DART_API_KEY=11bab97ec1e0c2e5e45dbfdc6d7d93bb9c98bfa2
 ```
 
 ### 3. 개발 서버
@@ -68,7 +68,7 @@ git init
 git add .
 git commit -m "Initial commit: cyclical value screener"
 git branch -M main
-git remote add origin https://github.com/당신의유저명/600b-invest-screener.git
+git remote add origin https://github.com/mandubird/600b-invest-screener.git
 git push -u origin main
 ```
 
@@ -79,12 +79,21 @@ git push -u origin main
 1. [Vercel](https://vercel.com) 로그인 (GitHub 계정 연동 권장)
 2. **Add New** → **Project**
 3. **Import** 할 GitHub 저장소 선택 후 **Import**
-4. **Environment Variables** 에서 변수 추가:
-   - **Name**: `DART_API_KEY`
-   - **Value**: DART에서 발급한 40자리 인증키
+4. **Environment Variables** 에서 변수 추가 (아래 "Vercel 환경변수 설정" 참고)
 5. **Deploy** 클릭
 
 배포가 끝나면 `https://프로젝트명.vercel.app` 형태의 URL이 생성됩니다.
+
+#### Vercel 환경변수 설정 (DART_API_KEY)
+
+1. [DART Open API](https://opendart.fss.or.kr) 접속 → 회원가입 후 **인증키 신청**  
+   - 인증키 관리: https://opendart.fss.or.kr/mng/userApiKeyListView.do
+2. Vercel 대시보드 → 해당 프로젝트 선택 → **Settings** → **Environment Variables**
+3. **Add New** 클릭
+   - **Key**: `DART_API_KEY` (이름 정확히 입력)
+   - **Value**: 발급받은 40자리 인증키 붙여넣기
+   - **Environment**: Production(또는 Preview/Development 필요 시 선택)
+4. **Save** 후 **Deployments** 탭에서 **Redeploy** 한 번 실행하면 적용됩니다.
 
 ### 4. 아이폰에서 사용
 
@@ -98,6 +107,8 @@ git push -u origin main
 ```
 ├── app/
 │   ├── api/
+│   │   ├── company/
+│   │   │   └── list.json/route.ts   # GET /api/company/list.json (상장사 목록)
 │   │   ├── dart/
 │   │   │   ├── companies/route.ts   # DART 회사 목록
 │   │   │   └── financials/route.ts # DART 재무 (유동자산, 부채총계, 매출액)
