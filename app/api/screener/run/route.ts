@@ -207,7 +207,15 @@ export async function POST(request: NextRequest) {
     response.headers.set("Cache-Control", "private, max-age=300");
     return response;
   } catch (e) {
-    console.error("Screener run error:", e);
+    console.error("Screener run error raw:", e);
+    try {
+      console.error("상세 에러:", JSON.stringify(e, null, 2));
+    } catch {
+      console.error("상세 에러(JSON 직렬화 실패)");
+    }
+    console.error("에러 메시지:", e instanceof Error ? e.message : String(e));
+    console.error("스택:", e instanceof Error ? e.stack : "없음");
+
     const message = e instanceof Error ? e.message : String(e);
     const isDartError = message.includes("DART") || message.includes("corpCode");
     const status = isDartError ? 400 : 500;
