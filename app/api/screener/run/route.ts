@@ -5,7 +5,8 @@ import { isManaged } from "@/lib/managedStocks";
 import { fetchCompanyList } from "@/lib/dartCompanies";
 
 const DART_BASE = "https://opendart.fss.or.kr/api";
-const YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart";
+const NAVER_MAIN = "https://finance.naver.com/item/main.naver";
+const NAVER_DAILY_CHART = "https://fchart.stock.naver.com/sise.nhn";
 const MAX_STOCKS = 10;
 const BATCH = 6;
 
@@ -56,30 +57,92 @@ async function fetchDartFinancials(key: string, corpCode: string) {
   };
 }
 
-async function fetchYahooQuote(symbol: string) {
-  const url = `${YAHOO_CHART}/${encodeURIComponent(symbol)}?range=1y&interval=1d`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; Screener/1.0)" },
+async function fetchNaverQuote(rawCode: string) {
+  const code = rawCode.padStart(6, "0");
+  const ua = "Mozilla/5.0 (compatible; 600b-invest-screener/1.0)";
+
+  // 1) 메인 페이지에서 현재가, 시가총액
+  const mainUrl = `${NAVER_MAIN}?code=${encodeURIComponent(code)}`;
+  const mainRes = await fetch(mainUrl, {
+    headers: { "User-Agent": ua },
   });
-  const data = await res.json();
-  const chart = data?.chart?.result?.[0];
-  if (!chart) return null;
-  const meta = chart.meta || {};
-  const quote = chart.indicators?.quote?.[0];
-  const prices = (quote?.close || chart.indicators?.adjclose?.[0]?.adjclose || [])
-    .filter((v: number | null) => v != null) as number[];
-  const currentPrice = meta.regularMarketPrice ?? prices[prices.length - 1];
-  if (currentPrice == null) return null;
-  const volumes = (quote?.volume || []).filter((v: number | null) => v != null) as number[];
+  const mainHtml = await mainRes.text();
+
+  let price: number | null = null;
+  let marketCap: number | undefined;
+
+  try {
+    const priceMatch = mainHtml.match(/현재가[^0-9]*([\d,]+)/);
+    if (priceMatch) {
+      price = parseInt(priceMatch[1].replace(/,/g, ""), 10);
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const mcapMatch = mainHtml.match(/시가총액[^0-9]*([\d,]+)\s*억/);
+    if (mcapMatch) {
+      const mcapEok = parseInt(mcapMatch[1].replace(/,/g, ""), 10);
+      if (!isNaN(mcapEok)) {
+        marketCap = mcapEok * 100_000_000;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2) 일봉 차트 데이터 (최대 130일)
+  const chartUrl = `${NAVER_DAILY_CHART}?symbol=${encodeURIComponent(
+    code
+  )}&timeframe=day&count=130&requestType=0`;
+  const chartRes = await fetch(chartUrl, {
+    headers: { "User-Agent": ua },
+  });
+  const chartXml = await chartRes.text();
+
+  const prices: number[] = [];
+  const volumes: number[] = [];
+
+  const itemRegex = /data=\"([^\"]+)\"/g;
+  let match: RegExpExecArray | null;
+  while ((match = itemRegex.exec(chartXml)) !== null) {
+    const parts = match[1].split("|");
+    if (parts.length < 6) continue;
+    const close = parseInt(parts[4], 10);
+    const vol = parseInt(parts[5], 10);
+    if (!isNaN(close)) prices.push(close);
+    if (!isNaN(vol)) volumes.push(vol);
+  }
+
+  if (prices.length === 0) {
+    if (price == null) return null;
+    return {
+      price,
+      low52w: price,
+      ma20: null,
+      ma60: null,
+      ma120: null,
+      volume: 0,
+      marketCap,
+    };
+  }
+
+  const lastPrice = price ?? prices[prices.length - 1];
+  const low52w = Math.min(...prices);
+  const ma20 = ma(prices, 20);
+  const ma60 = ma(prices, 60);
+  const ma120 = ma(prices, 120);
   const lastVolume = volumes.length ? volumes[volumes.length - 1] : 0;
+
   return {
-    price: currentPrice,
-    low52w: prices.length ? Math.min(...prices) : currentPrice,
-    ma20: ma(prices, 20),
-    ma60: ma(prices, 60),
-    ma120: ma(prices, 120),
+    price: lastPrice,
+    low52w,
+    ma20,
+    ma60,
+    ma120,
     volume: lastVolume,
-    marketCap: meta.marketCap as number | undefined,
+    marketCap,
   };
 }
 
@@ -148,7 +211,7 @@ export async function POST(request: NextRequest) {
         batch.map(async (c) => {
           const [fin, quote] = await Promise.all([
             fetchDartFinancials(key, c.corp_code),
-            fetchYahooQuote(c.stock_code + (c.corp_cls === "Y" ? ".KS" : ".KQ")),
+            fetchNaverQuote(c.stock_code),
           ]);
           if (!quote || quote.price == null) return null;
           const revenue = fin.revenue;
