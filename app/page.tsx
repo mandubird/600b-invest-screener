@@ -268,6 +268,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<keyof Row>("psr");
   const [sortAsc, setSortAsc] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   const updateFilter = (key: keyof typeof filters, val: number | boolean) =>
     setFilters((prev) => ({ ...prev, [key]: val }));
@@ -289,11 +290,10 @@ export default function App() {
     const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000);
 
     try {
-      const res = await fetch("/api/screener/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(filters),
+      const res = await fetch("/api/results/latest", {
+        method: "GET",
         signal: controller.signal,
+        cache: "no-store",
       });
       clearTimeout(timeoutId);
       const data = await res.json();
@@ -304,12 +304,14 @@ export default function App() {
         return;
       }
 
-      const list = (data.list || []).map((d: Row) => ({
+      const raw = (data.items || data.list || []) as any[];
+      const list = raw.map((d: any) => ({
         ...d,
         low52pct: ((d.price - d.low52w) / d.low52w * 100).toFixed(1),
         signal: signal(d.psr),
       }));
       setResults(list);
+      setLastUpdated(data.generatedAt || null);
     } catch (e) {
       clearTimeout(timeoutId);
       const isAbort = e instanceof Error && e.name === "AbortError";
@@ -476,7 +478,15 @@ export default function App() {
                   <span style={styles.resultLabel}> 종목 발굴</span>
                 </div>
                 <div style={styles.resultDate}>
-                  {new Date().toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric" })}
+                  {lastUpdated
+                    ? new Date(lastUpdated).toLocaleString("ko-KR", {
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    : "업데이트 정보 없음"}
                 </div>
               </div>
 
