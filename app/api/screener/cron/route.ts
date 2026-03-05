@@ -1,12 +1,12 @@
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
-import { kv } from "@vercel/kv";
 import { isManaged } from "@/lib/managedStocks";
 import { fetchCompanyList } from "@/lib/dartCompanies";
 
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart";
+const REDIS_URL = process.env.REDIS_URL;
 const MAX_STOCKS = 120;
 const BATCH = 6;
 
@@ -23,6 +23,27 @@ type ScreenerItem = {
   ma60: number | null;
   ma120: number | null;
 };
+
+async function redisSetJSON(key: string, value: unknown) {
+  if (!REDIS_URL) {
+    throw new Error("REDIS_URL 환경변수가 설정되지 않았습니다.");
+  }
+  const encodedKey = encodeURIComponent(key);
+  const encodedValue = encodeURIComponent(JSON.stringify(value));
+  const url = `${REDIS_URL}/set/${encodedKey}/${encodedValue}`;
+  const res = await fetch(url);
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    // ignore JSON parse errors
+  }
+  if (!res.ok || (data && data.error)) {
+    throw new Error(
+      `Upstash Redis set 실패: ${data?.error || res.statusText || res.status}`
+    );
+  }
+}
 
 function findAmount(list: { account_nm?: string; thstrm_amount?: string }[], ...names: string[]) {
   for (const n of names) {
@@ -110,6 +131,10 @@ export async function GET() {
   const startedAt = new Date();
 
   try {
+    if (!REDIS_URL) {
+      throw new Error("REDIS_URL 환경변수가 설정되지 않았습니다.");
+    }
+
     const fullList = await fetchCompanyList(key);
     const companies = fullList
       .filter((c) => {
@@ -172,7 +197,7 @@ export async function GET() {
       items,
     };
 
-    await kv.set("screener:latest", payload);
+    await redisSetJSON("screener:latest", payload);
 
     const durationMs = Date.now() - startedAt.getTime();
 

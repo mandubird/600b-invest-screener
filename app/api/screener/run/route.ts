@@ -1,7 +1,6 @@
 export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
-import { kv } from "@vercel/kv";
 
 type CachedItem = {
   ticker: string;
@@ -16,6 +15,34 @@ type CachedItem = {
   ma60: number | null;
   ma120: number | null;
 };
+
+const REDIS_URL = process.env.REDIS_URL;
+
+async function redisGetJSON<T>(key: string): Promise<T | null> {
+  if (!REDIS_URL) {
+    throw new Error("REDIS_URL 환경변수가 설정되지 않았습니다.");
+  }
+  const encodedKey = encodeURIComponent(key);
+  const url = `${REDIS_URL}/get/${encodedKey}`;
+  const res = await fetch(url);
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    // ignore JSON parse errors
+  }
+  if (!res.ok) {
+    throw new Error(`Upstash Redis get 실패: ${res.statusText || res.status}`);
+  }
+  const raw = data?.result;
+  if (raw == null) return null;
+  try {
+    const decoded = decodeURIComponent(String(raw));
+    return JSON.parse(decoded) as T;
+  } catch {
+    throw new Error("Upstash Redis 값 JSON 파싱 실패");
+  }
+}
 
 export async function POST(request: NextRequest) {
   const key = process.env.DART_API_KEY;
@@ -53,11 +80,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const cache = (await kv.get<{
-      generatedAt: string;
-      count: number;
-      items: CachedItem[];
-    }>("screener:latest")) || null;
+    const cache =
+      (await redisGetJSON<{
+        generatedAt: string;
+        count: number;
+        items: CachedItem[];
+      }>("screener:latest")) || null;
 
     if (!cache || !Array.isArray(cache.items)) {
       return NextResponse.json(
