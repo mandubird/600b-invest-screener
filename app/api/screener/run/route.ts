@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextRequest, NextResponse } from "next/server";
 import { isManaged } from "@/lib/managedStocks";
 import { fetchCompanyList } from "@/lib/dartCompanies";

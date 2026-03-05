@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextRequest, NextResponse } from "next/server";
 
 const YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart";
