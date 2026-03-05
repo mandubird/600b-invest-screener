@@ -285,12 +285,17 @@ export default function App() {
     setResults(null);
     setError(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+
     try {
       const res = await fetch("/api/screener/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(filters),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       const data = await res.json();
 
       if (!res.ok) {
@@ -306,7 +311,9 @@ export default function App() {
       }));
       setResults(list);
     } catch (e) {
-      setError("네트워크 오류입니다. 다시 시도해 주세요.");
+      clearTimeout(timeoutId);
+      const isAbort = e instanceof Error && e.name === "AbortError";
+      setError(isAbort ? "요청 시간이 초과되었습니다. 다시 시도해 주세요." : "네트워크 오류입니다. 다시 시도해 주세요.");
       setResults([]);
     } finally {
       setLoading(false);
@@ -456,11 +463,7 @@ export default function App() {
           {loading && (
             <div style={styles.loadingWrap}>
               <div style={styles.loadingAnim}>
-                {["코스피/코스닥 로드", "재무 데이터 조회", "주가·이평 계산", "필터 적용"].map((t, i) => (
-                  <div key={i} style={{ ...styles.loadStep, animationDelay: `${i * 0.2}s` }}>
-                    {t}…
-                  </div>
-                ))}
+                <div style={styles.loadStep}>스크리닝 중… (최대 5분 소요)</div>
               </div>
             </div>
           )}

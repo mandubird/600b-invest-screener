@@ -6,7 +6,7 @@ import { fetchCompanyList } from "@/lib/dartCompanies";
 
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart";
-const MAX_STOCKS = 20;
+const MAX_STOCKS = 10;
 const BATCH = 6;
 
 function findAmount(list: { account_nm?: string; thstrm_amount?: string }[], ...names: string[]) {
