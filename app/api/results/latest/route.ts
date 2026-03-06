@@ -18,7 +18,9 @@ export async function GET() {
       );
     }
 
-    const latest = blobs[0];
+    const latest = blobs.sort(
+      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+    )[0];
     const res = await fetch(latest.url);
     const data = await res.json();
 

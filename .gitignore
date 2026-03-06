@@ -2,6 +2,7 @@
 node_modules
 .pnp
 .pnp.js
+.venv
 
 # env (API 키 등)
 .env

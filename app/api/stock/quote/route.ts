@@ -2,7 +2,8 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 
-const YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart";
+const NAVER_DAY_CHART = "https://fchart.stock.naver.com/sise.nhn";
+const USER_AGENT = "Mozilla/5.0 (compatible; 600b-invest-screener/1.0)";
 
 function ma(prices: number[], period: number): number | null {
   if (!prices.length || prices.length < period) return null;
@@ -13,47 +14,42 @@ function ma(prices: number[], period: number): number | null {
 export async function GET(request: NextRequest) {
   const symbol = request.nextUrl.searchParams.get("symbol");
   if (!symbol) {
-    return NextResponse.json({ error: "symbol 필요 (예: 005930.KS)" }, { status: 400 });
+    return NextResponse.json({ error: "symbol 필요 (예: 005930 또는 5930)" }, { status: 400 });
   }
 
+  const code = String(symbol).replace(/\.KS$|\.KQ$/i, "").padStart(6, "0");
+  const url = `${NAVER_DAY_CHART}?symbol=${encodeURIComponent(code)}&timeframe=day&count=130&requestType=0`;
+
   try {
-    const range = "1y";
-    const interval = "1d";
-    const url = `${YAHOO_CHART}/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`;
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; Screener/1.0)" },
+      headers: { "User-Agent": USER_AGENT },
       next: { revalidate: 300 },
     });
-    const data = await res.json();
+    const xml = await res.text();
 
-    const chart = data?.chart?.result?.[0];
-    if (!chart) {
-      return NextResponse.json(
-        { error: "차트 데이터 없음", meta: data?.chart?.error },
-        { status: 404 }
-      );
+    const prices: number[] = [];
+    const volumes: number[] = [];
+    const itemRegex = /data="([^"]+)"/g;
+    let match: RegExpExecArray | null;
+    while ((match = itemRegex.exec(xml)) !== null) {
+      const parts = match[1].split("|");
+      if (parts.length < 6) continue;
+      const close = parseInt(parts[4], 10);
+      const vol = parseInt(parts[5], 10);
+      if (!isNaN(close)) prices.push(close);
+      if (!isNaN(vol)) volumes.push(vol);
     }
 
-    const meta = chart.meta || {};
-    const quote = chart.indicators?.quote?.[0];
-    const prices = (quote?.close || chart.indicators?.adjclose?.[0]?.adjclose || [])
-      .filter((v: number | null) => v != null) as number[];
-
-    const currentPrice = meta.regularMarketPrice ?? prices[prices.length - 1];
-    if (currentPrice == null) {
-      return NextResponse.json({ error: "현재가 없음" }, { status: 404 });
+    if (prices.length === 0) {
+      return NextResponse.json({ error: "일봉 데이터 없음" }, { status: 404 });
     }
 
-    const low52w = prices.length ? Math.min(...prices) : currentPrice;
+    const currentPrice = prices[prices.length - 1];
+    const low52w = Math.min(...prices);
     const ma20 = ma(prices, 20);
     const ma60 = ma(prices, 60);
     const ma120 = ma(prices, 120);
-
-    const timestamps = chart.timestamp || [];
-    const volumes = (quote?.volume || []).filter((v: number | null) => v != null) as number[];
     const lastVolume = volumes.length ? volumes[volumes.length - 1] : 0;
-
-    const marketCap = meta.marketCap ?? undefined;
 
     return NextResponse.json({
       price: currentPrice,
@@ -62,10 +58,10 @@ export async function GET(request: NextRequest) {
       ma60: ma60 ?? undefined,
       ma120: ma120 ?? undefined,
       volume: lastVolume,
-      marketCap,
+      marketCap: undefined,
     });
   } catch (e) {
-    console.error("Yahoo quote error:", e);
+    console.error("Naver quote error:", e);
     return NextResponse.json(
       { error: "주가 조회 오류" },
       { status: 500 }

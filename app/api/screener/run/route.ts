@@ -195,7 +195,7 @@ export async function POST(request: NextRequest) {
       ticker: string;
       name: string;
       price: number;
-      mktcap: number;
+      mktcap: number | null;
       volume: number;
       low52w: number;
       psr: number;
@@ -219,9 +219,12 @@ export async function POST(request: NextRequest) {
           const totalLiab = fin.total_liabilities;
           const mktcap = quote.marketCap
             ? Math.round(quote.marketCap / 100_000_000)
-            : 0;
+            : null;
           if (revenue == null || revenue <= 0) return null;
-          const psr = mktcap ? (mktcap * 100_000_000) / revenue : Infinity;
+          const psr =
+            mktcap != null && mktcap > 0
+              ? (mktcap * 100_000_000) / revenue
+              : Infinity;
           const netCash =
             currentAssets != null && totalLiab != null ? currentAssets - totalLiab : null;
           const ncr =
@@ -240,7 +243,7 @@ export async function POST(request: NextRequest) {
           if (psr > filters.psr_max) return null;
           if (ncr < filters.cash_min) return null;
           if (quote.volume < volMin) return null;
-          if (mktcap < filters.mktcap_min) return null;
+          if (mktcap != null && mktcap < filters.mktcap_min) return null;
           if (low52pct > filters.low52w_pct) return null;
           if (filters.ma_below && !maBelow) return null;
 
@@ -248,7 +251,7 @@ export async function POST(request: NextRequest) {
             ticker: c.stock_code,
             name: c.corp_name,
             price: quote.price,
-            mktcap,
+            mktcap: mktcap ?? null,
             volume: quote.volume,
             low52w: quote.low52w,
             psr,

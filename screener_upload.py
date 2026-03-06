@@ -7,13 +7,14 @@
 - PSR, 순현금비율 계산 및 필터링
 - 결과를 JSON으로 만들어 Vercel API(/api/results/upload)에 업로드
 
-필수 환경변수:
+환경변수 (.env 또는 export):
 - DART_API_KEY: DART 오픈API 키
 - UPLOAD_SECRET: /api/results/upload 에서 검증할 비밀 문자열
+- BLOB_READ_WRITE_TOKEN: (선택) Vercel Blob 토큰. 업로드 API는 서버에서 사용.
 
-실행 예시:
-  export DART_API_KEY=발급키
-  export UPLOAD_SECRET=mysecret123
+설정 방법:
+  .env.example 을 복사해 .env 로 저장한 뒤 값을 채우세요.
+  pip install python-dotenv pykrx requests
   python screener_upload.py
 """
 
@@ -24,9 +25,13 @@ import sys
 import zipfile
 from datetime import datetime, timedelta
 
+from dotenv import load_dotenv
+
 import requests
 from pykrx import stock
 
+# 프로젝트 루트의 .env 로드 (실행 위치와 관계없이 스크립트 기준으로 찾음)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 DART_API_KEY = os.environ.get("DART_API_KEY")
 UPLOAD_SECRET = os.environ.get("UPLOAD_SECRET")
@@ -47,6 +52,14 @@ def fetch_corp_code_map() -> dict[str, str]:
   url = f"https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={DART_API_KEY}"
   res = requests.get(url, timeout=30)
   res.raise_for_status()
+  # DART는 오류 시 ZIP 대신 XML/HTML 에러 반환할 수 있음
+  if not (res.content[:2] == b"PK"):
+    try:
+      err = res.text[:500] if res.text else res.content[:500]
+      print(f"DART API 응답이 ZIP이 아닙니다. (API 키·일일 한도 확인)\n{err}", file=sys.stderr)
+    except Exception:
+      print("DART API 응답이 ZIP이 아닙니다. DART_API_KEY와 일일 한도를 확인하세요.", file=sys.stderr)
+    sys.exit(1)
   zf = zipfile.ZipFile(io.BytesIO(res.content))
   # ZIP 안의 첫 번째 XML 파일 사용
   xml_name = next((n for n in zf.namelist() if n.lower().endswith(".xml")), None)
@@ -107,17 +120,63 @@ def calc_ma(series: list[int], n: int) -> float | None:
   return sum(window) / len(window)
 
 
+def _safe_num(row, key: str) -> int | float | None:
+  """Series에서 key에 해당하는 값을 숫자로 반환. 없거나 변환 실패 시 None."""
+  try:
+    if key not in row.index:
+      return None
+    v = row[key]
+    if v is None or (isinstance(v, float) and v != v):  # NaN
+      return None
+    if isinstance(v, (int, float)):
+      return int(v) if isinstance(v, float) and v == int(v) else v
+    return int(float(str(v).replace(",", "")))
+  except (ValueError, TypeError, KeyError):
+    return None
+
+
+def get_latest_trading_date() -> str:
+  """가장 최근 거래일(영업일)의 YYYYMMDD 문자열을 반환."""
+  today = datetime.today().date()
+  for i in range(10):
+    day = today - timedelta(days=i)
+    # 월(0)~금(5)만 시도
+    if day.weekday() >= 5:
+      continue
+    day_str = day.strftime("%Y%m%d")
+    # 대표 종목(삼성전자)으로 해당 일이 실제 거래일인지 확인
+    df = stock.get_market_ohlcv_by_date(day_str, day_str, "005930")
+    if not df.empty:
+      return day_str
+  # 10일 안에 못 찾으면 어제 날짜로 폴백
+  return (today - timedelta(days=1)).strftime("%Y%m%d")
+
+
 def build_results():
-  today = datetime.today()
-  start = (today - timedelta(days=260)).strftime("%Y%m%d")
-  end = today.strftime("%Y%m%d")
+  end = get_latest_trading_date()
+  end_dt = datetime.strptime(end, "%Y%m%d")
+  start = (end_dt - timedelta(days=260)).strftime("%Y%m%d")
+
+  print(f"스캔 기준일(최근 거래일): {end}")
 
   print("DART corpCode.xml 다운로드 중...")
   stock_to_corp = fetch_corp_code_map()
   print(f"corpCode 매핑 {len(stock_to_corp)}개 로드")
 
-  print("시가총액 데이터 로드 중...")
-  mcap_df = stock.get_market_cap_by_ticker(end)
+  print("OHLCV(시가총액) 데이터 로드 중...")
+  try:
+    df_ohlcv = stock.get_market_ohlcv_by_ticker(end, market="ALL")
+  except Exception as e:
+    print(
+      f"시세 데이터를 pykrx에서 불러오지 못했습니다: {e}",
+      file=sys.stderr,
+    )
+    sys.exit(1)
+  # 실제 컬럼명 확인용
+  print("df_ohlcv.columns:", df_ohlcv.columns.tolist())
+  print("df_ohlcv.index.name:", df_ohlcv.index.name)
+  if len(df_ohlcv) > 0:
+    print("df_ohlcv 첫 행 샘플:", df_ohlcv.iloc[0].to_dict())
 
   markets = ["KOSPI", "KOSDAQ"]
   tickers: list[str] = []
@@ -147,10 +206,17 @@ def build_results():
       ma60 = calc_ma(closes, 60)
       ma120 = calc_ma(closes, 120)
 
-      if ticker in mcap_df.index:
-        mktcap = int(mcap_df.loc[ticker, "시가총액"])
-      else:
-        mktcap = None
+      # df_ohlcv에서 시가총액 또는 상장주식수×종가 (컬럼은 위 print로 확인)
+      mktcap = None
+      if ticker in df_ohlcv.index:
+        row = df_ohlcv.loc[ticker]
+        close_price = _safe_num(row, "종가") or price
+        if "시가총액" in df_ohlcv.columns:
+          mktcap = _safe_num(row, "시가총액")
+        if mktcap is None and "상장주식수" in df_ohlcv.columns:
+          shares = _safe_num(row, "상장주식수")
+          if shares is not None and close_price is not None:
+            mktcap = int(shares * close_price)
 
       fin = fetch_dart_financials(corp_code)
       revenue = fin.get("revenue")

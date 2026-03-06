@@ -4,7 +4,8 @@
 **PSR**(시가총액/매출액)과 **순현금비율** 기반으로 저평가 종목을 발굴하며, 아이폰 사파리에서 매일 조건에 맞는 종목을 확인하는 용도로 사용할 수 있습니다.
 
 - **DART Open API**: 재무 데이터(유동자산, 부채총계, 매출액)
-- **Yahoo Finance**: 주가, 거래량, 52주 저점, 이평선(20/60/120)
+- **네이버 금융 일봉**: 주가, 거래량, 52주 저점, 이평선(20/60/120) (메인/API)
+- **pykrx + 로컬 업로드**: `screener_upload.py` → POST `/api/results/upload` → Vercel Blob
 - **Next.js + Vercel** 배포
 
 ---
@@ -49,6 +50,27 @@ npm run dev
 
 브라우저에서 [http://localhost:3000](http://localhost:3000) 접속.
 
+- **메인 (/)** : 업로드된 최신 결과 불러오기 (스크리닝 실행)
+- **로컬 (/local)** : `/api/results/latest` 데이터 + 프론트 필터. 데이터 없으면 `run_screener.command` 실행 안내
+
+---
+
+## 로컬 업로드 스크립트 (결과 JSON 업로드)
+
+Vercel에 스크리닝 결과를 올리려면 `screener_upload.py` 를 사용합니다.  
+환경변수는 **프로젝트 루트의 `.env`** 에 두면 실행할 때마다 자동으로 읽습니다.
+
+1. **`.env` 설정**
+   - `.env.example` 을 복사해 `.env` 로 저장
+   - `UPLOAD_SECRET`, `DART_API_KEY` (필수) 값을 채움  
+   - `.env` 는 Git에 올라가지 않습니다 (`.gitignore`에 포함됨)
+
+2. **의존성 및 실행**
+   ```bash
+   pip install -r requirements.txt
+   python screener_upload.py
+   ```
+
 ---
 
 ## GitHub + Vercel 배포
@@ -84,16 +106,16 @@ git push -u origin main
 
 배포가 끝나면 `https://프로젝트명.vercel.app` 형태의 URL이 생성됩니다.
 
-#### Vercel 환경변수 설정 (DART_API_KEY)
+#### Vercel 환경변수 설정
 
-1. [DART Open API](https://opendart.fss.or.kr) 접속 → 회원가입 후 **인증키 신청**  
-   - 인증키 관리: https://opendart.fss.or.kr/mng/userApiKeyListView.do
-2. Vercel 대시보드 → 해당 프로젝트 선택 → **Settings** → **Environment Variables**
-3. **Add New** 클릭
-   - **Key**: `DART_API_KEY` (이름 정확히 입력)
-   - **Value**: 발급받은 40자리 인증키 붙여넣기
-   - **Environment**: Production(또는 Preview/Development 필요 시 선택)
-4. **Save** 후 **Deployments** 탭에서 **Redeploy** 한 번 실행하면 적용됩니다.
+| Key | 설명 |
+|-----|------|
+| `DART_API_KEY` | [DART Open API](https://opendart.fss.or.kr) 인증키 (40자) |
+| `UPLOAD_SECRET` | `/api/results/upload` 인증용 비밀 문자열 (예: screener2026). 로컬 `.env`와 동일하게 설정 |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob 저장소 연결 시 대시보드에서 자동 부여 |
+
+1. Vercel 대시보드 → 해당 프로젝트 → **Settings** → **Environment Variables** 에서 위 변수 추가
+2. **Save** 후 **Deployments** 탭에서 **Redeploy** 하면 적용됩니다.
 
 ### 4. 아이폰에서 사용
 
@@ -113,9 +135,14 @@ git push -u origin main
 │   │   │   ├── companies/route.ts   # DART 회사 목록
 │   │   │   └── financials/route.ts # DART 재무 (유동자산, 부채총계, 매출액)
 │   │   ├── stock/
-│   │   │   └── quote/route.ts      # Yahoo Finance 주가·거래량·이평
+│   │   │   └── quote/route.ts      # 네이버 금융 일봉 주가·거래량·이평
+│   │   ├── results/
+│   │   │   ├── upload/route.ts    # POST 업로드 (UPLOAD_SECRET 검증 → Vercel Blob)
+│   │   │   └── latest/route.ts    # GET 최신 결과 (Blob)
 │   │   └── screener/
-│   │       └── run/route.ts         # 스크리닝 실행 (POST)
+│   │       └── run/route.ts       # 스크리닝 실행 (POST)
+│   ├── local/
+│   │   └── page.tsx               # /local — 업로드 결과 + 프론트 필터
 │   ├── globals.css
 │   ├── layout.tsx
 │   └── page.tsx
