@@ -290,8 +290,10 @@ export default function App() {
     const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000);
 
     try {
-      const res = await fetch("/api/results/latest", {
-        method: "GET",
+      const res = await fetch("/api/screener/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(filters),
         signal: controller.signal,
         cache: "no-store",
       });
@@ -307,11 +309,11 @@ export default function App() {
       const raw = (data.items || data.list || []) as any[];
       const list = raw.map((d: any) => ({
         ...d,
-        low52pct: ((d.price - d.low52w) / d.low52w * 100).toFixed(1),
+        low52pct: d.low52w > 0 ? ((d.price - d.low52w) / d.low52w * 100).toFixed(1) : "0",
         signal: signal(d.psr),
       }));
       setResults(list);
-      setLastUpdated(data.generatedAt || null);
+      setLastUpdated(data.generatedAt ?? new Date().toISOString());
     } catch (e) {
       clearTimeout(timeoutId);
       const isAbort = e instanceof Error && e.name === "AbortError";

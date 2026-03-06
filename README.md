@@ -50,8 +50,8 @@ npm run dev
 
 브라우저에서 [http://localhost:3000](http://localhost:3000) 접속.
 
-- **메인 (/)** : 업로드된 최신 결과 불러오기 (스크리닝 실행)
-- **로컬 (/local)** : `/api/results/latest` 데이터 + 프론트 필터. 데이터 없으면 `run_screener.command` 실행 안내
+- **메인 (/)** : **POST /api/screener/run** (네이버 실시간 스크리닝). 필터 전송 후 서버에서 DART+네이버로 실행
+- **로컬 (/local)** : **GET /api/results/latest** (파이썬 업로드 결과). Blob에서 불러와 프론트 필터. 데이터 없으면 `run_screener.command` 실행 안내
 
 ---
 
