@@ -39,7 +39,7 @@ DART API 키가 없으면 **데모 결과 보기**로 샘플 데이터만 확인
 
 ```bash
 # .env.local
-DART_API_KEY=11bab97ec1e0c2e5e45dbfdc6d7d93bb9c98bfa2
+DART_API_KEY=your_dart_api_key_here
 ```
 
 ### 3. 개발 서버
@@ -130,7 +130,7 @@ git push -u origin main
 ├── app/
 │   ├── api/
 │   │   ├── company/
-│   │   │   └── list.json/route.ts   # GET /api/company/list.json (상장사 목록)
+│   │   │   └── list/route.ts        # GET /api/company/list (상장사 목록)
 │   │   ├── dart/
 │   │   │   ├── companies/route.ts   # DART 회사 목록
 │   │   │   └── financials/route.ts # DART 재무 (유동자산, 부채총계, 매출액)
@@ -156,7 +156,7 @@ git push -u origin main
 
 - **DART API 키**는 코드에 넣지 않고 **Vercel 환경변수** `DART_API_KEY` 로만 사용합니다.
 - API 라우트는 같은 도메인에서만 호출되므로 CORS 설정은 필요 없습니다.
-- 스크리닝은 상장사 중 최대 120종목만 검사합니다. Vercel 서버리스 타임아웃(무료 10초, Pro 60초) 내에 완료되도록 조정되어 있습니다.
+- 스크리닝은 상장사 중 최대 10종목만 검사합니다. Vercel 서버리스 타임아웃(무료 10초, Pro 60초) 내에 완료되도록 조정되어 있습니다.
 
 ---
 

@@ -27,6 +27,21 @@ function ma(prices: number[], period: number): number | null {
   return slice.reduce((a, b) => a + b, 0) / slice.length;
 }
 
+function parseKoreanMktCapToWon(html: string): number | undefined {
+  const around = html.match(/시가총액[\s\S]{0,160}/)?.[0] ?? "";
+  if (!around) return undefined;
+
+  const joMatch = around.match(/([\d,]+)\s*조/);
+  const eokMatch = around.match(/([\d,]+)\s*억/);
+
+  const jo = joMatch ? parseInt(joMatch[1].replace(/,/g, ""), 10) : 0;
+  const eok = eokMatch ? parseInt(eokMatch[1].replace(/,/g, ""), 10) : 0;
+
+  if (Number.isNaN(jo) || Number.isNaN(eok)) return undefined;
+  if (jo === 0 && eok === 0) return undefined;
+  return (jo * 10_000 + eok) * 100_000_000;
+}
+
 async function fetchDartFinancials(key: string, corpCode: string) {
   const year = new Date().getFullYear();
   const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
@@ -80,17 +95,7 @@ async function fetchNaverQuote(rawCode: string) {
     // ignore
   }
 
-  try {
-    const mcapMatch = mainHtml.match(/시가총액[^0-9]*([\d,]+)\s*억/);
-    if (mcapMatch) {
-      const mcapEok = parseInt(mcapMatch[1].replace(/,/g, ""), 10);
-      if (!isNaN(mcapEok)) {
-        marketCap = mcapEok * 100_000_000;
-      }
-    }
-  } catch {
-    // ignore
-  }
+  marketCap = parseKoreanMktCapToWon(mainHtml);
 
   // 2) 일봉 차트 데이터 (최대 130일)
   const chartUrl = `${NAVER_DAILY_CHART}?symbol=${encodeURIComponent(
@@ -273,6 +278,7 @@ export async function POST(request: NextRequest) {
         list: results,
         filters,
         count: results.length,
+        generatedAt: new Date().toISOString(),
       },
       { status: 200 }
     );

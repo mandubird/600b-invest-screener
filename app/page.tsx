@@ -341,8 +341,30 @@ export default function App() {
 
   const sorted = results
     ? [...results].sort((a, b) => {
-        const v = (x: Row) => (typeof x[sortKey] === "number" ? x[sortKey] : 0) as number;
-        return sortAsc ? v(a) - v(b) : v(b) - v(a);
+        const va = a[sortKey];
+        const vb = b[sortKey];
+
+        const numA =
+          typeof va === "number"
+            ? va
+            : sortKey === "low52pct" && typeof va === "string"
+              ? Number(va)
+              : null;
+        const numB =
+          typeof vb === "number"
+            ? vb
+            : sortKey === "low52pct" && typeof vb === "string"
+              ? Number(vb)
+              : null;
+
+        if (numA != null && numB != null && !Number.isNaN(numA) && !Number.isNaN(numB)) {
+          return sortAsc ? numA - numB : numB - numA;
+        }
+
+        const strA = String(va ?? "");
+        const strB = String(vb ?? "");
+        const compared = strA.localeCompare(strB, "ko");
+        return sortAsc ? compared : -compared;
       })
     : [];
 
