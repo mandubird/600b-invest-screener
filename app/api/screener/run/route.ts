@@ -7,7 +7,7 @@ import { fetchCompanyList } from "@/lib/dartCompanies";
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const NAVER_MAIN = "https://finance.naver.com/item/main.naver";
 const NAVER_DAILY_CHART = "https://fchart.stock.naver.com/sise.nhn";
-const MAX_STOCKS = 10;
+const MAX_STOCKS = 120;
 const BATCH = 6;
 
 function findAmount(list: { account_nm?: string; thstrm_amount?: string }[], ...names: string[]) {
