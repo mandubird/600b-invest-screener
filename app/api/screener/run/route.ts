@@ -53,11 +53,14 @@ function ma(prices: number[], period: number): number | null {
 }
 
 function parseKoreanMktCapToWon(html: string): number | undefined {
-  const around = html.match(/시가총액[\s\S]{0,160}/)?.[0] ?? "";
-  if (!around) return undefined;
+  const inner = html.match(/id=["']_market_sum["'][^>]*>([\s\S]*?)<\/em>/i)?.[1];
+  if (!inner) return undefined;
 
-  const joMatch = around.match(/([\d,]+)\s*조/);
-  const eokMatch = around.match(/([\d,]+)\s*억/);
+  const text = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return undefined;
+
+  const joMatch = text.match(/([\d,]+)\s*조/);
+  const eokMatch = text.match(/조\s*([\d,]+)/) || text.match(/([\d,]+)\s*억/);
 
   const jo = joMatch ? parseInt(joMatch[1].replace(/,/g, ""), 10) : 0;
   const eok = eokMatch ? parseInt(eokMatch[1].replace(/,/g, ""), 10) : 0;
@@ -65,6 +68,13 @@ function parseKoreanMktCapToWon(html: string): number | undefined {
   if (Number.isNaN(jo) || Number.isNaN(eok)) return undefined;
   if (jo === 0 && eok === 0) return undefined;
   return (jo * 10_000 + eok) * 100_000_000;
+}
+
+function parseListedShares(html: string): number | undefined {
+  const sharesMatch = html.match(/상장주식수[\s\S]{0,120}?<em>([\d,]+)<\/em>/);
+  if (!sharesMatch) return undefined;
+  const shares = parseInt(sharesMatch[1].replace(/,/g, ""), 10);
+  return Number.isNaN(shares) ? undefined : shares;
 }
 
 function selectEvenly<T>(arr: T[], max: number): T[] {
@@ -193,6 +203,12 @@ async function fetchNaverQuote(rawCode: string) {
   }
 
   const lastPrice = price ?? prices[prices.length - 1];
+  if (!marketCap) {
+    const shares = parseListedShares(mainHtml);
+    if (shares && lastPrice > 0) {
+      marketCap = shares * lastPrice;
+    }
+  }
   const low52w = Math.min(...prices);
   const ma20 = ma(prices, 20);
   const ma60 = ma(prices, 60);
