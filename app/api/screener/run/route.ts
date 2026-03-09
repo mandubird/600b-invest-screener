@@ -10,6 +10,31 @@ const NAVER_DAILY_CHART = "https://fchart.stock.naver.com/sise.nhn";
 const MAX_STOCKS = 120;
 const BATCH = 6;
 
+type ScreenerFilters = {
+  psr_max: number;
+  cash_min: number;
+  volume_min: number;
+  mktcap_min: number;
+  low52w_pct: number;
+  ma_below: boolean;
+};
+
+type Candidate = {
+  ticker: string;
+  name: string;
+  price: number;
+  mktcap: number | null;
+  volume: number;
+  low52w: number;
+  psr: number;
+  ncr: number;
+  ma20: number;
+  ma60: number;
+  ma120: number;
+  low52pct: number;
+  maBelow: boolean;
+};
+
 function findAmount(list: { account_nm?: string; thstrm_amount?: string }[], ...names: string[]) {
   for (const n of names) {
     const row = list.find((r) => (r.account_nm || "").includes(n));
@@ -40,6 +65,40 @@ function parseKoreanMktCapToWon(html: string): number | undefined {
   if (Number.isNaN(jo) || Number.isNaN(eok)) return undefined;
   if (jo === 0 && eok === 0) return undefined;
   return (jo * 10_000 + eok) * 100_000_000;
+}
+
+function selectEvenly<T>(arr: T[], max: number): T[] {
+  if (arr.length <= max) return arr;
+  const step = arr.length / max;
+  const picked: T[] = [];
+  for (let i = 0; i < max; i++) {
+    picked.push(arr[Math.floor(i * step)]);
+  }
+  return picked;
+}
+
+function applyScreenerFilters(items: Candidate[], filters: ScreenerFilters): Candidate[] {
+  const volMin = filters.volume_min * 10_000;
+  return items.filter((item) => {
+    if (item.psr > filters.psr_max) return false;
+    if (item.ncr < filters.cash_min) return false;
+    if (item.volume < volMin) return false;
+    if (item.mktcap != null && item.mktcap < filters.mktcap_min) return false;
+    if (item.low52pct > filters.low52w_pct) return false;
+    if (filters.ma_below && !item.maBelow) return false;
+    return true;
+  });
+}
+
+function buildRelaxedFilters(filters: ScreenerFilters): ScreenerFilters {
+  return {
+    psr_max: Math.min(1.0, filters.psr_max + 0.2),
+    cash_min: Math.max(0, filters.cash_min - 0.05),
+    volume_min: Math.max(30, Math.floor(filters.volume_min * 0.5)),
+    mktcap_min: filters.mktcap_min,
+    low52w_pct: Math.min(50, filters.low52w_pct + 15),
+    ma_below: false,
+  };
 }
 
 async function fetchDartFinancials(key: string, corpCode: string) {
@@ -160,7 +219,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let filters = {
+  let filters: ScreenerFilters = {
     psr_max: 0.4,
     cash_min: 0.1,
     volume_min: 100,
@@ -193,25 +252,12 @@ export async function POST(request: NextRequest) {
         const code = (c.stock_code || "").trim();
         const cls = (c.corp_cls || "").trim();
         return code && code !== "-" && (cls === "Y" || cls === "K") && !isManaged(code);
-      })
-      .slice(0, MAX_STOCKS);
+      });
+    const selectedCompanies = selectEvenly(companies, MAX_STOCKS);
+    const candidates: Candidate[] = [];
 
-    const results: {
-      ticker: string;
-      name: string;
-      price: number;
-      mktcap: number | null;
-      volume: number;
-      low52w: number;
-      psr: number;
-      ncr: number;
-      ma20: number;
-      ma60: number;
-      ma120: number;
-    }[] = [];
-
-    for (let i = 0; i < companies.length; i += BATCH) {
-      const batch = companies.slice(i, i + BATCH);
+    for (let i = 0; i < selectedCompanies.length; i += BATCH) {
+      const batch = selectedCompanies.slice(i, i + BATCH);
       const settled = await Promise.allSettled(
         batch.map(async (c) => {
           const [fin, quote] = await Promise.all([
@@ -244,14 +290,6 @@ export async function POST(request: NextRequest) {
             (quote.ma60 != null && quote.price < quote.ma60) &&
             (quote.ma120 != null && quote.price < quote.ma120);
 
-          const volMin = filters.volume_min * 10000;
-          if (psr > filters.psr_max) return null;
-          if (ncr < filters.cash_min) return null;
-          if (quote.volume < volMin) return null;
-          if (mktcap != null && mktcap < filters.mktcap_min) return null;
-          if (low52pct > filters.low52w_pct) return null;
-          if (filters.ma_below && !maBelow) return null;
-
           return {
             ticker: c.stock_code,
             name: c.corp_name,
@@ -264,19 +302,40 @@ export async function POST(request: NextRequest) {
             ma20: quote.ma20 ?? 0,
             ma60: quote.ma60 ?? 0,
             ma120: quote.ma120 ?? 0,
+            low52pct,
+            maBelow,
           };
         })
       );
 
       for (const p of settled) {
-        if (p.status === "fulfilled" && p.value) results.push(p.value);
+        if (p.status === "fulfilled" && p.value) candidates.push(p.value);
+      }
+    }
+
+    const strictResults = applyScreenerFilters(candidates, filters);
+    let results = strictResults;
+    let appliedFilters = filters;
+    let usedRelaxedFallback = false;
+
+    if (strictResults.length === 0 && candidates.length > 0) {
+      const relaxed = buildRelaxedFilters(filters);
+      const relaxedResults = applyScreenerFilters(candidates, relaxed);
+      if (relaxedResults.length > 0) {
+        results = relaxedResults;
+        appliedFilters = relaxed;
+        usedRelaxedFallback = true;
       }
     }
 
     const response = NextResponse.json(
       {
         list: results,
-        filters,
+        filters: appliedFilters,
+        requestedFilters: filters,
+        usedRelaxedFallback,
+        scanned: selectedCompanies.length,
+        candidates: candidates.length,
         count: results.length,
         generatedAt: new Date().toISOString(),
       },
