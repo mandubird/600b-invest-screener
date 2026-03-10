@@ -110,11 +110,11 @@ function applyScreenerFilters(items: Candidate[], filters: ScreenerFilters): Can
 
 function buildRelaxedFilters(filters: ScreenerFilters): ScreenerFilters {
   return {
-    psr_max: Math.min(1.0, filters.psr_max + 0.2),
-    cash_min: Math.max(0, filters.cash_min - 0.05),
-    volume_min: Math.max(30, Math.floor(filters.volume_min * 0.5)),
-    mktcap_min: filters.mktcap_min,
-    low52w_pct: Math.min(50, filters.low52w_pct + 15),
+    psr_max: Math.min(1.5, filters.psr_max + 0.4),
+    cash_min: Math.max(-0.2, filters.cash_min - 0.3),
+    volume_min: Math.max(10, Math.floor(filters.volume_min * 0.3)),
+    mktcap_min: Math.max(10, Math.floor(filters.mktcap_min * 0.5)),
+    low52w_pct: Math.min(70, filters.low52w_pct + 25),
     ma_below: false,
   };
 }
@@ -158,7 +158,15 @@ async function fetchDartFinancials(key: string, corpCode: string) {
       return {
         current_assets: findAmount(list, "유동자산"),
         total_liabilities: findAmount(list, "부채총계"),
-        revenue: findAmount(list, "매출액", "매출"),
+        revenue: findAmount(
+          list,
+          "매출액",
+          "매출",
+          "영업수익",
+          "순영업수익",
+          "이자수익",
+          "보험료수익"
+        ),
       };
     }
   }
