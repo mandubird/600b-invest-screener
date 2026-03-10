@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import TrustSections from "@/components/screener/TrustSections";
 
 const DEFAULT_FILTERS = {
   psr_max: 0.4,
@@ -608,6 +609,8 @@ export default function App() {
               </div>
             </>
           )}
+
+          <TrustSections />
         </main>
       </div>
     </div>
