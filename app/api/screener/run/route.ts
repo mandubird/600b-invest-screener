@@ -43,6 +43,29 @@ type Candidate = {
   maBelow: boolean;
 };
 
+type FilterRejectStats = {
+  psr: number;
+  ncr: number;
+  volume: number;
+  mktcap: number;
+  low52w: number;
+  maBelow: number;
+};
+
+type FilterResult = {
+  passed: Candidate[];
+  rejectStats: FilterRejectStats;
+};
+
+type CollectionStats = {
+  totalProcessed: number;
+  noQuote: number;
+  noRevenue: number;
+  noMarketCap: number;
+  noNetCash: number;
+  collected: number;
+};
+
 function findAmount(list: { account_nm?: string; thstrm_amount?: string }[], ...names: string[]) {
   for (const n of names) {
     const row = list.find((r) => (r.account_nm || "").includes(n));
@@ -95,17 +118,51 @@ function selectEvenly<T>(arr: T[], max: number): T[] {
   return picked;
 }
 
-function applyScreenerFilters(items: Candidate[], filters: ScreenerFilters): Candidate[] {
+function emptyRejectStats(): FilterRejectStats {
+  return {
+    psr: 0,
+    ncr: 0,
+    volume: 0,
+    mktcap: 0,
+    low52w: 0,
+    maBelow: 0,
+  };
+}
+
+function applyScreenerFilters(items: Candidate[], filters: ScreenerFilters): FilterResult {
   const volMin = filters.volume_min * 10_000;
-  return items.filter((item) => {
-    if (item.psr > filters.psr_max) return false;
-    if (item.ncr < filters.cash_min) return false;
-    if (item.volume < volMin) return false;
-    if (item.mktcap != null && item.mktcap < filters.mktcap_min) return false;
-    if (item.low52pct > filters.low52w_pct) return false;
-    if (filters.ma_below && !item.maBelow) return false;
-    return true;
-  });
+  const rejectStats = emptyRejectStats();
+  const passed: Candidate[] = [];
+
+  for (const item of items) {
+    if (item.psr > filters.psr_max) {
+      rejectStats.psr += 1;
+      continue;
+    }
+    if (item.ncr < filters.cash_min) {
+      rejectStats.ncr += 1;
+      continue;
+    }
+    if (item.volume < volMin) {
+      rejectStats.volume += 1;
+      continue;
+    }
+    if (item.mktcap != null && item.mktcap < filters.mktcap_min) {
+      rejectStats.mktcap += 1;
+      continue;
+    }
+    if (item.low52pct > filters.low52w_pct) {
+      rejectStats.low52w += 1;
+      continue;
+    }
+    if (filters.ma_below && !item.maBelow) {
+      rejectStats.maBelow += 1;
+      continue;
+    }
+    passed.push(item);
+  }
+
+  return { passed, rejectStats };
 }
 
 function buildRelaxedFilters(filters: ScreenerFilters): ScreenerFilters {
@@ -305,33 +362,52 @@ export async function POST(request: NextRequest) {
       });
     const selectedCompanies = selectEvenly(companies, maxStocks);
     const candidates: Candidate[] = [];
+    const collectionStats: CollectionStats = {
+      totalProcessed: 0,
+      noQuote: 0,
+      noRevenue: 0,
+      noMarketCap: 0,
+      noNetCash: 0,
+      collected: 0,
+    };
 
     for (let i = 0; i < selectedCompanies.length; i += BATCH) {
       const batch = selectedCompanies.slice(i, i + BATCH);
       const settled = await Promise.allSettled(
         batch.map(async (c) => {
+          collectionStats.totalProcessed += 1;
           const [fin, quote] = await Promise.all([
             fetchDartFinancials(key, c.corp_code),
             fetchNaverQuote(c.stock_code),
           ]);
-          if (!quote || quote.price == null) return null;
+          if (!quote || quote.price == null) {
+            collectionStats.noQuote += 1;
+            return null;
+          }
           const revenue = fin.revenue;
           const currentAssets = fin.current_assets;
           const totalLiab = fin.total_liabilities;
           const mktcap = quote.marketCap
             ? Math.round(quote.marketCap / 100_000_000)
             : null;
-          if (revenue == null || revenue <= 0) return null;
+          if (revenue == null || revenue <= 0) {
+            collectionStats.noRevenue += 1;
+            return null;
+          }
+          if (mktcap == null || mktcap <= 0) {
+            collectionStats.noMarketCap += 1;
+            return null;
+          }
           const psr =
-            mktcap != null && mktcap > 0
-              ? (mktcap * 100_000_000) / revenue
-              : Infinity;
+            (mktcap * 100_000_000) / revenue;
           const netCash =
             currentAssets != null && totalLiab != null ? currentAssets - totalLiab : null;
-          const ncr =
-            quote.marketCap && netCash != null && quote.marketCap > 0
-              ? netCash / quote.marketCap
-              : -1;
+          if (netCash == null || !quote.marketCap || quote.marketCap <= 0) {
+            collectionStats.noNetCash += 1;
+          }
+          const ncr = quote.marketCap && netCash != null && quote.marketCap > 0
+            ? netCash / quote.marketCap
+            : -1;
 
           const low52pct =
             quote.low52w > 0 ? ((quote.price - quote.low52w) / quote.low52w) * 100 : 0;
@@ -359,20 +435,25 @@ export async function POST(request: NextRequest) {
       );
 
       for (const p of settled) {
-        if (p.status === "fulfilled" && p.value) candidates.push(p.value);
+        if (p.status === "fulfilled" && p.value) {
+          candidates.push(p.value);
+          collectionStats.collected += 1;
+        }
       }
     }
 
-    const strictResults = applyScreenerFilters(candidates, filters);
-    let results = strictResults;
+    const strictResult = applyScreenerFilters(candidates, filters);
+    let results = strictResult.passed;
     let appliedFilters = filters;
     let usedRelaxedFallback = false;
+    let relaxedRejectStats = emptyRejectStats();
 
-    if (strictResults.length === 0 && candidates.length > 0) {
+    if (strictResult.passed.length === 0 && candidates.length > 0) {
       const relaxed = buildRelaxedFilters(filters);
-      const relaxedResults = applyScreenerFilters(candidates, relaxed);
-      if (relaxedResults.length > 0) {
-        results = relaxedResults;
+      const relaxedResult = applyScreenerFilters(candidates, relaxed);
+      relaxedRejectStats = relaxedResult.rejectStats;
+      if (relaxedResult.passed.length > 0) {
+        results = relaxedResult.passed;
         appliedFilters = relaxed;
         usedRelaxedFallback = true;
       }
@@ -384,6 +465,11 @@ export async function POST(request: NextRequest) {
         filters: appliedFilters,
         requestedFilters: filters,
         usedRelaxedFallback,
+        diagnostics: {
+          collection: collectionStats,
+          strictFilterRejects: strictResult.rejectStats,
+          relaxedFilterRejects: relaxedRejectStats,
+        },
         scanned: selectedCompanies.length,
         maxStocks,
         candidates: candidates.length,
