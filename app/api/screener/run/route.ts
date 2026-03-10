@@ -2,13 +2,21 @@ export const dynamic = "force-dynamic";
 
 import { NextRequest, NextResponse } from "next/server";
 import { isManaged } from "@/lib/managedStocks";
-import { fetchCompanyList } from "@/lib/dartCompanies";
+import { fetchCompanyList, type CompanyItem } from "@/lib/dartCompanies";
 
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const NAVER_MAIN = "https://finance.naver.com/item/main.naver";
 const NAVER_DAILY_CHART = "https://fchart.stock.naver.com/sise.nhn";
-const MAX_STOCKS = 120;
+const DEFAULT_MAX_STOCKS = 40;
+const MAX_STOCKS_HARD_LIMIT = 120;
 const BATCH = 6;
+const COMPANY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+let companyListCache: {
+  key: string;
+  list: CompanyItem[];
+  fetchedAt: number;
+} | null = null;
 
 type ScreenerFilters = {
   psr_max: number;
@@ -109,6 +117,28 @@ function buildRelaxedFilters(filters: ScreenerFilters): ScreenerFilters {
     low52w_pct: Math.min(50, filters.low52w_pct + 15),
     ma_below: false,
   };
+}
+
+function resolveMaxStocks() {
+  const raw = Number(process.env.SCREENER_MAX_STOCKS ?? DEFAULT_MAX_STOCKS);
+  if (!Number.isFinite(raw)) return DEFAULT_MAX_STOCKS;
+  const value = Math.floor(raw);
+  return Math.min(MAX_STOCKS_HARD_LIMIT, Math.max(10, value));
+}
+
+async function getCachedCompanyList(key: string) {
+  const now = Date.now();
+  if (
+    companyListCache &&
+    companyListCache.key === key &&
+    now - companyListCache.fetchedAt < COMPANY_CACHE_TTL_MS
+  ) {
+    return companyListCache.list;
+  }
+
+  const list = await fetchCompanyList(key);
+  companyListCache = { key, list, fetchedAt: now };
+  return list;
 }
 
 async function fetchDartFinancials(key: string, corpCode: string) {
@@ -262,14 +292,15 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const fullList = await fetchCompanyList(key);
+    const maxStocks = resolveMaxStocks();
+    const fullList = await getCachedCompanyList(key);
     const companies = fullList
       .filter((c) => {
         const code = (c.stock_code || "").trim();
         const cls = (c.corp_cls || "").trim();
         return code && code !== "-" && (cls === "Y" || cls === "K") && !isManaged(code);
       });
-    const selectedCompanies = selectEvenly(companies, MAX_STOCKS);
+    const selectedCompanies = selectEvenly(companies, maxStocks);
     const candidates: Candidate[] = [];
 
     for (let i = 0; i < selectedCompanies.length; i += BATCH) {
@@ -351,6 +382,7 @@ export async function POST(request: NextRequest) {
         requestedFilters: filters,
         usedRelaxedFallback,
         scanned: selectedCompanies.length,
+        maxStocks,
         candidates: candidates.length,
         count: results.length,
         generatedAt: new Date().toISOString(),
