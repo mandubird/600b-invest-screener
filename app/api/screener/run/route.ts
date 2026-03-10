@@ -142,33 +142,28 @@ async function getCachedCompanyList(key: string) {
 }
 
 async function fetchDartFinancials(key: string, corpCode: string) {
-  const year = new Date().getFullYear();
-  const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
-    key
-  )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year}&reprt_code=11011`;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (data.status !== "000" || !Array.isArray(data.list)) {
-    const url2 = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
-      key
-    )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year - 1}&reprt_code=11011`;
-    const res2 = await fetch(url2);
-    const data2 = await res2.json();
-    if (data2.status !== "000" || !Array.isArray(data2.list))
-      return { current_assets: null, total_liabilities: null, revenue: null };
-    const list = data2.list;
-    return {
-      current_assets: findAmount(list, "유동자산"),
-      total_liabilities: findAmount(list, "부채총계"),
-      revenue: findAmount(list, "매출액", "매출"),
-    };
+  const thisYear = new Date().getFullYear();
+  const reportCodes = ["11011", "11014", "11012", "11013"];
+
+  for (let year = thisYear; year >= thisYear - 2; year--) {
+    for (const reprtCode of reportCodes) {
+      const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
+        key
+      )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year}&reprt_code=${reprtCode}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.status !== "000" || !Array.isArray(data.list)) continue;
+
+      const list = data.list;
+      return {
+        current_assets: findAmount(list, "유동자산"),
+        total_liabilities: findAmount(list, "부채총계"),
+        revenue: findAmount(list, "매출액", "매출"),
+      };
+    }
   }
-  const list = data.list;
-  return {
-    current_assets: findAmount(list, "유동자산"),
-    total_liabilities: findAmount(list, "부채총계"),
-    revenue: findAmount(list, "매출액", "매출"),
-  };
+
+  return { current_assets: null, total_liabilities: null, revenue: null };
 }
 
 async function fetchNaverQuote(rawCode: string) {
