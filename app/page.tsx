@@ -62,6 +62,7 @@ type RunDiagnostics = {
     noMarketCap?: number;
     noNetCash?: number;
     collected?: number;
+    timeBudgetHit?: boolean;
   };
 };
 
@@ -317,10 +318,17 @@ export default function App() {
         cache: "no-store",
       });
       clearTimeout(timeoutId);
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
 
       if (!res.ok) {
-        setError(data.error || "스크리닝 요청 실패");
+        const statusMessage = `요청 실패 (${res.status})`;
+        setError(data.error || statusMessage);
         setResults([]);
         return;
       }

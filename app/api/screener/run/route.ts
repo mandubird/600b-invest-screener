@@ -7,16 +7,42 @@ import { fetchCompanyList, type CompanyItem } from "@/lib/dartCompanies";
 const DART_BASE = "https://opendart.fss.or.kr/api";
 const NAVER_MAIN = "https://finance.naver.com/item/main.naver";
 const NAVER_DAILY_CHART = "https://fchart.stock.naver.com/sise.nhn";
-const DEFAULT_MAX_STOCKS = 40;
+const DEFAULT_MAX_STOCKS = 20;
 const MAX_STOCKS_HARD_LIMIT = 120;
 const BATCH = 6;
 const COMPANY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const EXTERNAL_TIMEOUT_MS = 8_000;
+const API_TIME_BUDGET_MS = 45_000;
 
 let companyListCache: {
   key: string;
   list: CompanyItem[];
   fetchedAt: number;
 } | null = null;
+
+async function fetchTextWithTimeout(url: string, init?: RequestInit, timeoutMs = EXTERNAL_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchJsonWithTimeout<T = any>(url: string, init?: RequestInit, timeoutMs = EXTERNAL_TIMEOUT_MS): Promise<T | null> {
+  const text = await fetchTextWithTimeout(url, init, timeoutMs);
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
 
 type ScreenerFilters = {
   psr_max: number;
@@ -68,6 +94,7 @@ type CollectionStats = {
   noMarketCap: number;
   noNetCash: number;
   collected: number;
+  timeBudgetHit: boolean;
 };
 
 function findAmount(list: { account_nm?: string; thstrm_amount?: string }[], ...names: string[]) {
@@ -137,6 +164,9 @@ function buildDiagnosticsHint(
   collection: CollectionStats,
   strictRejects: FilterRejectStats
 ) {
+  if (collection.timeBudgetHit) {
+    return "서버 시간 제한에 가까워 일부 종목만 처리했습니다. 잠시 후 다시 시도하거나 /local 업로드 방식 사용을 권장합니다.";
+  }
   if (collection.collected === 0) {
     if (collection.noQuote >= collection.totalProcessed * 0.7) {
       return "시세 수집 실패 비중이 높습니다. 잠시 후 다시 시도하거나 /local 업로드 방식을 사용해 주세요.";
@@ -244,8 +274,8 @@ async function fetchDartFinancials(key: string, corpCode: string) {
       const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
         key
       )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year}&reprt_code=${reprtCode}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const data = await fetchJsonWithTimeout<{ status?: string; list?: any[] }>(url);
+      if (!data) continue;
       if (data.status !== "000" || !Array.isArray(data.list)) continue;
 
       const list = data.list;
@@ -274,10 +304,10 @@ async function fetchNaverQuote(rawCode: string) {
 
   // 1) 메인 페이지에서 현재가, 시가총액
   const mainUrl = `${NAVER_MAIN}?code=${encodeURIComponent(code)}`;
-  const mainRes = await fetch(mainUrl, {
+  const mainHtml = await fetchTextWithTimeout(mainUrl, {
     headers: { "User-Agent": ua },
   });
-  const mainHtml = await mainRes.text();
+  if (!mainHtml) return null;
 
   let price: number | null = null;
   let marketCap: number | undefined;
@@ -297,10 +327,21 @@ async function fetchNaverQuote(rawCode: string) {
   const chartUrl = `${NAVER_DAILY_CHART}?symbol=${encodeURIComponent(
     code
   )}&timeframe=day&count=130&requestType=0`;
-  const chartRes = await fetch(chartUrl, {
+  const chartXml = await fetchTextWithTimeout(chartUrl, {
     headers: { "User-Agent": ua },
   });
-  const chartXml = await chartRes.text();
+  if (!chartXml) {
+    if (price == null) return null;
+    return {
+      price,
+      low52w: price,
+      ma20: null,
+      ma60: null,
+      ma120: null,
+      volume: 0,
+      marketCap,
+    };
+  }
 
   const prices: number[] = [];
   const volumes: number[] = [];
@@ -414,9 +455,15 @@ export async function POST(request: NextRequest) {
       noMarketCap: 0,
       noNetCash: 0,
       collected: 0,
+      timeBudgetHit: false,
     };
+    const startAt = Date.now();
 
     for (let i = 0; i < selectedCompanies.length; i += BATCH) {
+      if (Date.now() - startAt > API_TIME_BUDGET_MS) {
+        collectionStats.timeBudgetHit = true;
+        break;
+      }
       const batch = selectedCompanies.slice(i, i + BATCH);
       const settled = await Promise.allSettled(
         batch.map(async (c) => {
@@ -516,6 +563,7 @@ export async function POST(request: NextRequest) {
           relaxedFilterRejects: relaxedRejectStats,
           hint: buildDiagnosticsHint(collectionStats, strictResult.rejectStats),
         },
+        partial: collectionStats.timeBudgetHit,
         scanned: selectedCompanies.length,
         maxStocks,
         candidates: candidates.length,
