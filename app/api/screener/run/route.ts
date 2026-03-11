@@ -25,6 +25,10 @@ type ScreenerFilters = {
   mktcap_min: number;
   low52w_pct: number;
   ma_below: boolean;
+  use_volume_filter: boolean;
+  use_mktcap_filter: boolean;
+  use_low52w_filter: boolean;
+  use_ma_filter: boolean;
 };
 
 type Candidate = {
@@ -129,6 +133,35 @@ function emptyRejectStats(): FilterRejectStats {
   };
 }
 
+function buildDiagnosticsHint(
+  collection: CollectionStats,
+  strictRejects: FilterRejectStats
+) {
+  if (collection.collected === 0) {
+    if (collection.noQuote >= collection.totalProcessed * 0.7) {
+      return "시세 수집 실패 비중이 높습니다. 잠시 후 다시 시도하거나 /local 업로드 방식을 사용해 주세요.";
+    }
+    if (collection.noRevenue >= collection.totalProcessed * 0.7) {
+      return "재무(매출) 데이터 인식 비중이 낮습니다. 공시 시점/업종 계정명 차이 영향을 받고 있습니다.";
+    }
+    if (collection.noMarketCap >= collection.totalProcessed * 0.5) {
+      return "시가총액 파싱 실패 비중이 높습니다. 데이터 소스 응답 형식을 점검해야 합니다.";
+    }
+    return "데이터 수집 후보가 부족합니다. 다시 실행하거나 로컬 업로드 데이터를 사용해 주세요.";
+  }
+
+  const pairs: Array<[keyof FilterRejectStats, number, string]> = [
+    ["psr", strictRejects.psr, "PSR 조건에서 많이 탈락했습니다."],
+    ["ncr", strictRejects.ncr, "순현금비율 조건에서 많이 탈락했습니다."],
+    ["volume", strictRejects.volume, "거래량 하한 조건에서 많이 탈락했습니다."],
+    ["mktcap", strictRejects.mktcap, "시가총액 하한 조건에서 많이 탈락했습니다."],
+    ["low52w", strictRejects.low52w, "52주 저점 대비 조건에서 많이 탈락했습니다."],
+    ["maBelow", strictRejects.maBelow, "이평선 하단 조건에서 많이 탈락했습니다."],
+  ];
+  const top = pairs.sort((a, b) => b[1] - a[1])[0];
+  return top && top[1] > 0 ? top[2] : "현재 조건에서 통과 종목이 없습니다.";
+}
+
 function applyScreenerFilters(items: Candidate[], filters: ScreenerFilters): FilterResult {
   const volMin = filters.volume_min * 10_000;
   const rejectStats = emptyRejectStats();
@@ -143,19 +176,19 @@ function applyScreenerFilters(items: Candidate[], filters: ScreenerFilters): Fil
       rejectStats.ncr += 1;
       continue;
     }
-    if (item.volume < volMin) {
+    if (filters.use_volume_filter && item.volume < volMin) {
       rejectStats.volume += 1;
       continue;
     }
-    if (item.mktcap != null && item.mktcap < filters.mktcap_min) {
+    if (filters.use_mktcap_filter && item.mktcap != null && item.mktcap < filters.mktcap_min) {
       rejectStats.mktcap += 1;
       continue;
     }
-    if (item.low52pct > filters.low52w_pct) {
+    if (filters.use_low52w_filter && item.low52pct > filters.low52w_pct) {
       rejectStats.low52w += 1;
       continue;
     }
-    if (filters.ma_below && !item.maBelow) {
+    if (filters.use_ma_filter && filters.ma_below && !item.maBelow) {
       rejectStats.maBelow += 1;
       continue;
     }
@@ -173,6 +206,10 @@ function buildRelaxedFilters(filters: ScreenerFilters): ScreenerFilters {
     mktcap_min: Math.max(10, Math.floor(filters.mktcap_min * 0.5)),
     low52w_pct: Math.min(70, filters.low52w_pct + 25),
     ma_below: false,
+    use_volume_filter: filters.use_volume_filter,
+    use_mktcap_filter: filters.use_mktcap_filter,
+    use_low52w_filter: filters.use_low52w_filter,
+    use_ma_filter: false,
   };
 }
 
@@ -332,6 +369,10 @@ export async function POST(request: NextRequest) {
     mktcap_min: 50,
     low52w_pct: 20,
     ma_below: true,
+    use_volume_filter: true,
+    use_mktcap_filter: true,
+    use_low52w_filter: true,
+    use_ma_filter: true,
   };
 
   // 요청 바디 파싱 (실패 시 400으로 구체적인 에러 반환)
@@ -343,6 +384,10 @@ export async function POST(request: NextRequest) {
     if (body.mktcap_min != null) filters.mktcap_min = Number(body.mktcap_min);
     if (body.low52w_pct != null) filters.low52w_pct = Number(body.low52w_pct);
     if (body.ma_below != null) filters.ma_below = Boolean(body.ma_below);
+    if (body.use_volume_filter != null) filters.use_volume_filter = Boolean(body.use_volume_filter);
+    if (body.use_mktcap_filter != null) filters.use_mktcap_filter = Boolean(body.use_mktcap_filter);
+    if (body.use_low52w_filter != null) filters.use_low52w_filter = Boolean(body.use_low52w_filter);
+    if (body.use_ma_filter != null) filters.use_ma_filter = Boolean(body.use_ma_filter);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return NextResponse.json(
@@ -469,6 +514,7 @@ export async function POST(request: NextRequest) {
           collection: collectionStats,
           strictFilterRejects: strictResult.rejectStats,
           relaxedFilterRejects: relaxedRejectStats,
+          hint: buildDiagnosticsHint(collectionStats, strictResult.rejectStats),
         },
         scanned: selectedCompanies.length,
         maxStocks,

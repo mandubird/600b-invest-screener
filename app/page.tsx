@@ -10,6 +10,10 @@ const DEFAULT_FILTERS = {
   mktcap_min: 50,
   low52w_pct: 20,
   ma_below: true,
+  use_volume_filter: true,
+  use_mktcap_filter: true,
+  use_low52w_filter: true,
+  use_ma_filter: true,
 };
 
 const SIGNAL_COLOR: Record<string, string> = {
@@ -47,6 +51,18 @@ type Row = {
   ma60: number;
   ma120: number;
   signal?: string;
+};
+
+type RunDiagnostics = {
+  hint?: string;
+  collection?: {
+    totalProcessed?: number;
+    noQuote?: number;
+    noRevenue?: number;
+    noMarketCap?: number;
+    noNetCash?: number;
+    collected?: number;
+  };
 };
 
 function FilterSection({ title, children }: { title: string; children: React.ReactNode }) {
@@ -270,6 +286,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState<keyof Row>("psr");
   const [sortAsc, setSortAsc] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<RunDiagnostics | null>(null);
 
   const updateFilter = (key: keyof typeof filters, val: number | boolean) =>
     setFilters((prev) => ({ ...prev, [key]: val }));
@@ -286,6 +303,7 @@ export default function App() {
     setLoading(true);
     setResults(null);
     setError(null);
+    setDiagnostics(null);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000);
@@ -314,6 +332,7 @@ export default function App() {
         signal: signal(d.psr),
       }));
       setResults(list);
+      setDiagnostics((data.diagnostics ?? null) as RunDiagnostics | null);
       setLastUpdated(data.generatedAt ?? new Date().toISOString());
     } catch (e) {
       clearTimeout(timeoutId);
@@ -424,6 +443,10 @@ export default function App() {
               onChange={(v) => updateFilter("volume_min", v)}
               display={`≥ ${fmt(filters.volume_min)}만주`}
             />
+            <div style={styles.toggleRow}>
+              <span style={styles.toggleLabel}>거래량 필터 적용</span>
+              <Toggle on={filters.use_volume_filter} onChange={(v) => updateFilter("use_volume_filter", v)} />
+            </div>
             <SliderRow
               label="시가총액 하한"
               value={filters.mktcap_min}
@@ -433,6 +456,10 @@ export default function App() {
               onChange={(v) => updateFilter("mktcap_min", v)}
               display={`≥ ${fmt(filters.mktcap_min)}억`}
             />
+            <div style={styles.toggleRow}>
+              <span style={styles.toggleLabel}>시가총액 필터 적용</span>
+              <Toggle on={filters.use_mktcap_filter} onChange={(v) => updateFilter("use_mktcap_filter", v)} />
+            </div>
             <SliderRow
               label="52주 저점 대비"
               value={filters.low52w_pct}
@@ -443,8 +470,16 @@ export default function App() {
               display={`≤ +${filters.low52w_pct}%`}
             />
             <div style={styles.toggleRow}>
+              <span style={styles.toggleLabel}>52주 저점 필터 적용</span>
+              <Toggle on={filters.use_low52w_filter} onChange={(v) => updateFilter("use_low52w_filter", v)} />
+            </div>
+            <div style={styles.toggleRow}>
               <span style={styles.toggleLabel}>이평선(20/60/120) 아래</span>
               <Toggle on={filters.ma_below} onChange={(v) => updateFilter("ma_below", v)} />
+            </div>
+            <div style={styles.toggleRow}>
+              <span style={styles.toggleLabel}>이평선 필터 적용</span>
+              <Toggle on={filters.use_ma_filter} onChange={(v) => updateFilter("use_ma_filter", v)} />
             </div>
           </FilterSection>
 
@@ -520,6 +555,23 @@ export default function App() {
                   현재 조건을 충족하는 종목이 없습니다.
                   <br />
                   필터를 완화하거나 데모 결과 보기로 UI를 확인해 보세요.
+                  {diagnostics?.hint && (
+                    <>
+                      <br />
+                      <span style={{ color: "#60c0ff" }}>원인 추정: {diagnostics.hint}</span>
+                    </>
+                  )}
+                  {diagnostics?.collection && (
+                    <>
+                      <br />
+                      <span style={{ color: "#4a7fa8", fontSize: 12 }}>
+                        처리 {diagnostics.collection.totalProcessed ?? 0} ·
+                        수집성공 {diagnostics.collection.collected ?? 0} ·
+                        시세실패 {diagnostics.collection.noQuote ?? 0} ·
+                        매출없음 {diagnostics.collection.noRevenue ?? 0}
+                      </span>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div style={styles.tableWrap}>
