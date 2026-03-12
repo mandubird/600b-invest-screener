@@ -97,15 +97,91 @@ type CollectionStats = {
   timeBudgetHit: boolean;
 };
 
-function findAmount(list: { account_nm?: string; thstrm_amount?: string }[], ...names: string[]) {
-  for (const n of names) {
-    const row = list.find((r) => (r.account_nm || "").includes(n));
-    if (row && row.thstrm_amount) {
-      const v = parseInt(String(row.thstrm_amount).replace(/,/g, ""), 10);
-      if (!isNaN(v)) return v;
-    }
+type DartFinancialRow = {
+  account_nm?: string;
+  thstrm_amount?: string;
+  frmtrm_amount?: string;
+  bfefrmtrm_amount?: string;
+};
+
+function parseAmount(value?: string): number | null {
+  if (!value) return null;
+  const normalized = String(value).trim().replace(/,/g, "");
+  if (!normalized || normalized === "-") return null;
+  const negative = /^\(.*\)$/.test(normalized);
+  const numeric = normalized.replace(/[()]/g, "");
+  const n = Number(numeric);
+  if (!Number.isFinite(n)) return null;
+  return negative ? -n : n;
+}
+
+function readAmountFromRow(row?: DartFinancialRow): number | null {
+  if (!row) return null;
+  return (
+    parseAmount(row.thstrm_amount) ??
+    parseAmount(row.frmtrm_amount) ??
+    parseAmount(row.bfefrmtrm_amount)
+  );
+}
+
+function normalizeAccountName(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[()[\]{}.,]/g, "");
+}
+
+function findAmountByAliases(list: DartFinancialRow[], aliases: string[]) {
+  const normalizedAliases = aliases.map((a) => normalizeAccountName(a));
+  for (const row of list) {
+    const account = normalizeAccountName(row.account_nm || "");
+    if (!account) continue;
+    const matched = normalizedAliases.some((alias) => account.includes(alias));
+    if (!matched) continue;
+    const amount = readAmountFromRow(row);
+    if (amount != null) return amount;
   }
   return null;
+}
+
+function findRevenueAmount(list: DartFinancialRow[]) {
+  const excluded = [
+    "매출원가",
+    "영업비용",
+    "판매비",
+    "관리비",
+    "금융비용",
+    "비용",
+    "원가",
+    "손실",
+    "매출채권",
+  ].map((x) => normalizeAccountName(x));
+  const aliases = [
+    "매출액",
+    "영업수익",
+    "순영업수익",
+    "보험영업수익",
+    "보험료수익",
+    "이자수익",
+    "수수료수익",
+    "용역수익",
+    "공사수익",
+    "분양수익",
+    "상품매출",
+    "제품매출",
+    "Revenue",
+  ].map((x) => normalizeAccountName(x));
+
+  for (const row of list) {
+    const account = normalizeAccountName(row.account_nm || "");
+    if (!account) continue;
+    if (excluded.some((token) => account.includes(token))) continue;
+    if (!aliases.some((alias) => account.includes(alias))) continue;
+    const amount = readAmountFromRow(row);
+    if (amount != null && amount > 0) return amount;
+  }
+
+  return findAmountByAliases(list, ["매출액", "영업수익", "순영업수익"]);
 }
 
 function ma(prices: number[], period: number): number | null {
@@ -268,30 +344,31 @@ async function getCachedCompanyList(key: string) {
 async function fetchDartFinancials(key: string, corpCode: string) {
   const thisYear = new Date().getFullYear();
   const reportCodes = ["11011", "11014", "11012", "11013"];
+  const fsDivList = ["CFS", "OFS"];
 
   for (let year = thisYear; year >= thisYear - 2; year--) {
     for (const reprtCode of reportCodes) {
-      const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
-        key
-      )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year}&reprt_code=${reprtCode}`;
-      const data = await fetchJsonWithTimeout<{ status?: string; list?: any[] }>(url);
-      if (!data) continue;
-      if (data.status !== "000" || !Array.isArray(data.list)) continue;
+      for (const fsDiv of fsDivList) {
+        const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
+          key
+        )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year}&reprt_code=${reprtCode}&fs_div=${fsDiv}`;
+        const data = await fetchJsonWithTimeout<{ status?: string; list?: DartFinancialRow[] }>(url);
+        if (!data) continue;
+        if (data.status !== "000" || !Array.isArray(data.list)) continue;
 
-      const list = data.list;
-      return {
-        current_assets: findAmount(list, "유동자산"),
-        total_liabilities: findAmount(list, "부채총계"),
-        revenue: findAmount(
-          list,
-          "매출액",
-          "매출",
-          "영업수익",
-          "순영업수익",
-          "이자수익",
-          "보험료수익"
-        ),
-      };
+        const list = data.list;
+        const revenue = findRevenueAmount(list);
+        const currentAssets = findAmountByAliases(list, ["유동자산"]);
+        const totalLiabilities = findAmountByAliases(list, ["부채총계", "부채총계(유동/비유동 포함)"]);
+
+        if (revenue != null || currentAssets != null || totalLiabilities != null) {
+          return {
+            current_assets: currentAssets,
+            total_liabilities: totalLiabilities,
+            revenue,
+          };
+        }
+      }
     }
   }
 
