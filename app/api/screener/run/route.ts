@@ -11,14 +11,24 @@ const DEFAULT_MAX_STOCKS = 20;
 const MAX_STOCKS_HARD_LIMIT = 120;
 const BATCH = 6;
 const COMPANY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const FINANCIAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const EXTERNAL_TIMEOUT_MS = 8_000;
-const API_TIME_BUDGET_MS = 45_000;
+const API_TIME_BUDGET_MS_DEFAULT = 52_000;
+const API_TIME_BUDGET_MS_MAX = 58_000;
 
 let companyListCache: {
   key: string;
   list: CompanyItem[];
   fetchedAt: number;
 } | null = null;
+
+let financialCache: Map<
+  string,
+  {
+    fetchedAt: number;
+    value: { current_assets: number | null; total_liabilities: number | null; revenue: number | null };
+  }
+> = new Map();
 
 async function fetchTextWithTimeout(url: string, init?: RequestInit, timeoutMs = EXTERNAL_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -98,6 +108,7 @@ type CollectionStats = {
 };
 
 type DartFinancialRow = {
+  account_id?: string;
   account_nm?: string;
   thstrm_amount?: string;
   frmtrm_amount?: string;
@@ -131,6 +142,22 @@ function normalizeAccountName(name: string) {
     .replace(/[()[\]{}.,]/g, "");
 }
 
+function normalizeAccountId(id: string) {
+  return id.toLowerCase().replace(/\s+/g, "");
+}
+
+function findAmountByAccountIds(list: DartFinancialRow[], accountIds: string[]) {
+  const normalizedIds = accountIds.map((id) => normalizeAccountId(id));
+  for (const row of list) {
+    const rowId = normalizeAccountId(row.account_id || "");
+    if (!rowId) continue;
+    if (!normalizedIds.some((id) => rowId.includes(id))) continue;
+    const amount = readAmountFromRow(row);
+    if (amount != null) return amount;
+  }
+  return null;
+}
+
 function findAmountByAliases(list: DartFinancialRow[], aliases: string[]) {
   const normalizedAliases = aliases.map((a) => normalizeAccountName(a));
   for (const row of list) {
@@ -145,6 +172,14 @@ function findAmountByAliases(list: DartFinancialRow[], aliases: string[]) {
 }
 
 function findRevenueAmount(list: DartFinancialRow[]) {
+  const revenueById = findAmountByAccountIds(list, [
+    "ifrs-full_revenue",
+    "ifrs_revenue",
+    "dart_revenue",
+    "ifrs-full_insurancerevenue",
+  ]);
+  if (revenueById != null && revenueById > 0) return revenueById;
+
   const excluded = [
     "매출원가",
     "영업비용",
@@ -240,20 +275,26 @@ function buildDiagnosticsHint(
   collection: CollectionStats,
   strictRejects: FilterRejectStats
 ) {
-  if (collection.timeBudgetHit) {
-    return "서버 시간 제한에 가까워 일부 종목만 처리했습니다. 잠시 후 다시 시도하거나 /local 업로드 방식 사용을 권장합니다.";
-  }
   if (collection.collected === 0) {
     if (collection.noQuote >= collection.totalProcessed * 0.7) {
       return "시세 수집 실패 비중이 높습니다. 잠시 후 다시 시도하거나 /local 업로드 방식을 사용해 주세요.";
     }
     if (collection.noRevenue >= collection.totalProcessed * 0.7) {
-      return "재무(매출) 데이터 인식 비중이 낮습니다. 공시 시점/업종 계정명 차이 영향을 받고 있습니다.";
+      return collection.timeBudgetHit
+        ? "매출 데이터 인식 비중이 낮고 시간 제한도 일부 영향이 있습니다. 잠시 후 재시도하거나 /local 업로드 사용을 권장합니다."
+        : "재무(매출) 데이터 인식 비중이 낮습니다. 공시 시점/업종 계정명 차이 영향을 받고 있습니다.";
     }
     if (collection.noMarketCap >= collection.totalProcessed * 0.5) {
       return "시가총액 파싱 실패 비중이 높습니다. 데이터 소스 응답 형식을 점검해야 합니다.";
     }
+    if (collection.timeBudgetHit) {
+      return "서버 시간 제한에 가까워 일부 종목만 처리했습니다. 잠시 후 다시 시도하거나 /local 업로드 방식 사용을 권장합니다.";
+    }
     return "데이터 수집 후보가 부족합니다. 다시 실행하거나 로컬 업로드 데이터를 사용해 주세요.";
+  }
+
+  if (collection.timeBudgetHit) {
+    return "서버 시간 제한에 가까워 일부 종목만 처리했습니다. 잠시 후 다시 시도하거나 /local 업로드 방식 사용을 권장합니다.";
   }
 
   const pairs: Array<[keyof FilterRejectStats, number, string]> = [
@@ -326,6 +367,13 @@ function resolveMaxStocks() {
   return Math.min(MAX_STOCKS_HARD_LIMIT, Math.max(10, value));
 }
 
+function resolveTimeBudgetMs() {
+  const raw = Number(process.env.SCREENER_TIME_BUDGET_MS ?? API_TIME_BUDGET_MS_DEFAULT);
+  if (!Number.isFinite(raw)) return API_TIME_BUDGET_MS_DEFAULT;
+  const value = Math.floor(raw);
+  return Math.min(API_TIME_BUDGET_MS_MAX, Math.max(20_000, value));
+}
+
 async function getCachedCompanyList(key: string) {
   const now = Date.now();
   if (
@@ -342,11 +390,23 @@ async function getCachedCompanyList(key: string) {
 }
 
 async function fetchDartFinancials(key: string, corpCode: string) {
-  const thisYear = new Date().getFullYear();
-  const reportCodes = ["11011", "11014", "11012", "11013"];
-  const fsDivList = ["CFS", "OFS"];
+  const cacheKey = `${key}:${corpCode}`;
+  const cached = financialCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < FINANCIAL_CACHE_TTL_MS) {
+    return cached.value;
+  }
 
-  for (let year = thisYear; year >= thisYear - 2; year--) {
+  const thisYear = new Date().getFullYear();
+  const years = [thisYear - 1, thisYear - 2, thisYear];
+  const reportCodes = ["11011", "11012", "11013", "11014"];
+  const fsDivList = ["CFS", "OFS"];
+  let best: { current_assets: number | null; total_liabilities: number | null; revenue: number | null } = {
+    current_assets: null,
+    total_liabilities: null,
+    revenue: null,
+  };
+
+  for (const year of years) {
     for (const reprtCode of reportCodes) {
       for (const fsDiv of fsDivList) {
         const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
@@ -358,21 +418,30 @@ async function fetchDartFinancials(key: string, corpCode: string) {
 
         const list = data.list;
         const revenue = findRevenueAmount(list);
-        const currentAssets = findAmountByAliases(list, ["유동자산"]);
-        const totalLiabilities = findAmountByAliases(list, ["부채총계", "부채총계(유동/비유동 포함)"]);
+        const currentAssets =
+          findAmountByAccountIds(list, ["ifrs-full_currentassets", "ifrs_currentassets", "dart_currentassets"]) ??
+          findAmountByAliases(list, ["유동자산"]);
+        const totalLiabilities =
+          findAmountByAccountIds(list, ["ifrs-full_liabilities", "ifrs_liabilities", "dart_liabilities"]) ??
+          findAmountByAliases(list, ["부채총계", "부채총계(유동/비유동 포함)"]);
 
-        if (revenue != null || currentAssets != null || totalLiabilities != null) {
-          return {
-            current_assets: currentAssets,
-            total_liabilities: totalLiabilities,
+        if (currentAssets != null) best.current_assets = currentAssets;
+        if (totalLiabilities != null) best.total_liabilities = totalLiabilities;
+        if (revenue != null && revenue > 0) {
+          const value = {
+            current_assets: currentAssets ?? best.current_assets,
+            total_liabilities: totalLiabilities ?? best.total_liabilities,
             revenue,
           };
+          financialCache.set(cacheKey, { fetchedAt: Date.now(), value });
+          return value;
         }
       }
     }
   }
 
-  return { current_assets: null, total_liabilities: null, revenue: null };
+  financialCache.set(cacheKey, { fetchedAt: Date.now(), value: best });
+  return best;
 }
 
 async function fetchNaverQuote(rawCode: string) {
@@ -516,6 +585,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const maxStocks = resolveMaxStocks();
+    const timeBudgetMs = resolveTimeBudgetMs();
     const fullList = await getCachedCompanyList(key);
     const companies = fullList
       .filter((c) => {
@@ -537,7 +607,7 @@ export async function POST(request: NextRequest) {
     const startAt = Date.now();
 
     for (let i = 0; i < selectedCompanies.length; i += BATCH) {
-      if (Date.now() - startAt > API_TIME_BUDGET_MS) {
+      if (Date.now() - startAt > timeBudgetMs) {
         collectionStats.timeBudgetHit = true;
         break;
       }
@@ -545,14 +615,12 @@ export async function POST(request: NextRequest) {
       const settled = await Promise.allSettled(
         batch.map(async (c) => {
           collectionStats.totalProcessed += 1;
-          const [fin, quote] = await Promise.all([
-            fetchDartFinancials(key, c.corp_code),
-            fetchNaverQuote(c.stock_code),
-          ]);
+          const quote = await fetchNaverQuote(c.stock_code);
           if (!quote || quote.price == null) {
             collectionStats.noQuote += 1;
             return null;
           }
+          const fin = await fetchDartFinancials(key, c.corp_code);
           const revenue = fin.revenue;
           const currentAssets = fin.current_assets;
           const totalLiab = fin.total_liabilities;
