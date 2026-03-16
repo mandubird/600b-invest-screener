@@ -111,13 +111,16 @@ type DartFinancialRow = {
   account_id?: string;
   account_nm?: string;
   thstrm_amount?: string;
+  thstrm_add_amount?: string;
   frmtrm_amount?: string;
+  frmtrm_q_amount?: string;
   bfefrmtrm_amount?: string;
+  fs_div?: string;
 };
 
 function parseAmount(value?: string): number | null {
   if (!value) return null;
-  const normalized = String(value).trim().replace(/,/g, "");
+  const normalized = String(value).trim().replace(/,/g, "").replace(/\s+/g, "");
   if (!normalized || normalized === "-") return null;
   const negative = /^\(.*\)$/.test(normalized);
   const numeric = normalized.replace(/[()]/g, "");
@@ -130,7 +133,9 @@ function readAmountFromRow(row?: DartFinancialRow): number | null {
   if (!row) return null;
   return (
     parseAmount(row.thstrm_amount) ??
+    parseAmount(row.thstrm_add_amount) ??
     parseAmount(row.frmtrm_amount) ??
+    parseAmount(row.frmtrm_q_amount) ??
     parseAmount(row.bfefrmtrm_amount)
   );
 }
@@ -177,6 +182,8 @@ function findRevenueAmount(list: DartFinancialRow[]) {
     "ifrs_revenue",
     "dart_revenue",
     "ifrs-full_insurancerevenue",
+    "ifrs-full_interestrevenue",
+    "ifrs-full_feeandcommissionrevenue",
   ]);
   if (revenueById != null && revenueById > 0) return revenueById;
 
@@ -197,11 +204,16 @@ function findRevenueAmount(list: DartFinancialRow[]) {
     "순영업수익",
     "보험영업수익",
     "보험료수익",
+    "수입보험료",
     "이자수익",
     "수수료수익",
     "용역수익",
     "공사수익",
     "분양수익",
+    "총영업수익",
+    "순매출액",
+    "수익(매출액)",
+    "영업수익(매출액)",
     "상품매출",
     "제품매출",
     "Revenue",
@@ -216,7 +228,13 @@ function findRevenueAmount(list: DartFinancialRow[]) {
     if (amount != null && amount > 0) return amount;
   }
 
-  return findAmountByAliases(list, ["매출액", "영업수익", "순영업수익"]);
+  return findAmountByAliases(list, [
+    "매출액",
+    "영업수익",
+    "순영업수익",
+    "총영업수익",
+    "수익(매출액)",
+  ]);
 }
 
 function ma(prices: number[], period: number): number | null {
@@ -244,7 +262,7 @@ function parseKoreanMktCapToWon(html: string): number | undefined {
 }
 
 function parseListedShares(html: string): number | undefined {
-  const sharesMatch = html.match(/상장주식수[\s\S]{0,120}?<em>([\d,]+)<\/em>/);
+  const sharesMatch = html.match(/상장주식수[\s\S]{0,500}?<em>([\d,]+)<\/em>/);
   if (!sharesMatch) return undefined;
   const shares = parseInt(sharesMatch[1].replace(/,/g, ""), 10);
   return Number.isNaN(shares) ? undefined : shares;
