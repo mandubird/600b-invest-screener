@@ -415,7 +415,7 @@ async function fetchDartFinancials(key: string, corpCode: string) {
   }
 
   const thisYear = new Date().getFullYear();
-  const years = [thisYear - 1, thisYear - 2, thisYear];
+  const years = [thisYear, thisYear - 1, thisYear - 2];
   const reportCodes = ["11011", "11012", "11013", "11014"];
   const fsDivList = ["CFS", "OFS"];
   let best: { current_assets: number | null; total_liabilities: number | null; revenue: number | null } = {
@@ -424,15 +424,38 @@ async function fetchDartFinancials(key: string, corpCode: string) {
     revenue: null,
   };
 
+  const debugAttempts: Array<{
+    year: number;
+    reprtCode: string;
+    fsDiv: string;
+    status?: string;
+    message?: string;
+    revenueFound?: boolean;
+    revenueCandidates?: string[];
+    accountSample?: string[];
+  }> = [];
+
   for (const year of years) {
     for (const reprtCode of reportCodes) {
       for (const fsDiv of fsDivList) {
         const url = `${DART_BASE}/fnlttSinglAcnt.json?crtfc_key=${encodeURIComponent(
           key
-        )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year}&reprt_code=${reprtCode}&fs_div=${fsDiv}`;
-        const data = await fetchJsonWithTimeout<{ status?: string; list?: DartFinancialRow[] }>(url);
-        if (!data) continue;
-        if (data.status !== "000" || !Array.isArray(data.list)) continue;
+        )}&corp_code=${encodeURIComponent(corpCode)}&bsns_year=${year}&reprt_code=${reprtCode}&fs_div=${fsDiv}&sj_div=IS`;
+        const data = await fetchJsonWithTimeout<{ status?: string; message?: string; list?: DartFinancialRow[] }>(url);
+        if (!data) {
+          debugAttempts.push({ year, reprtCode, fsDiv, status: "NO_RESPONSE" });
+          continue;
+        }
+        if (data.status !== "000" || !Array.isArray(data.list)) {
+          debugAttempts.push({
+            year,
+            reprtCode,
+            fsDiv,
+            status: data.status,
+            message: data.message,
+          });
+          continue;
+        }
 
         const list = data.list;
         const revenue = findRevenueAmount(list);
@@ -454,7 +477,36 @@ async function fetchDartFinancials(key: string, corpCode: string) {
           financialCache.set(cacheKey, { fetchedAt: Date.now(), value });
           return value;
         }
+
+        // 디버그용: 매출 후보 계정명만 일부 수집
+        const revenueCandidates = list
+          .map((r) => (r.account_nm || "").trim())
+          .filter((x) => x && (x.includes("매출") || x.includes("수익") || x.toLowerCase().includes("revenue")))
+          .slice(0, 20);
+        const accountSample = list
+          .map((r) => (r.account_nm || "").trim())
+          .filter(Boolean)
+          .slice(0, 30);
+        debugAttempts.push({
+          year,
+          reprtCode,
+          fsDiv,
+          status: data.status,
+          message: data.message,
+          revenueFound: false,
+          revenueCandidates,
+          accountSample,
+        });
       }
+    }
+  }
+
+  // 최종적으로도 매출을 못 찾은 케이스는 서버 로그에 “몇 개만” 출력
+  if (best.revenue == null) {
+    // 과도한 로그 방지: 요청당 5건까지만 출력
+    (globalThis as any).__dartNoRevenueLogCount = ((globalThis as any).__dartNoRevenueLogCount ?? 0) + 1;
+    if ((globalThis as any).__dartNoRevenueLogCount <= 5) {
+      console.warn("[DART][no-revenue] corpCode=", corpCode, "attempts(sample)=", debugAttempts.slice(0, 3));
     }
   }
 
