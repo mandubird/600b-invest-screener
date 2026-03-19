@@ -181,6 +181,9 @@ function findRevenueAmount(list: DartFinancialRow[]) {
     "ifrs-full_revenue",
     "ifrs_revenue",
     "dart_revenue",
+    // 일부 공시/표기에서 account_id가 예상과 다르게 들어오는 케이스를 대비
+    "ifrs-full_revenuefromcontractswithcustomers",
+    "revenue",
     "ifrs-full_insurancerevenue",
     "ifrs-full_interestrevenue",
     "ifrs-full_feeandcommissionrevenue",
@@ -200,8 +203,12 @@ function findRevenueAmount(list: DartFinancialRow[]) {
   ].map((x) => normalizeAccountName(x));
   const aliases = [
     "매출액",
+    "매출",
+    "총매출",
+    "매출총액",
     "영업수익",
     "순영업수익",
+    "수익",
     "보험영업수익",
     "보험료수익",
     "수입보험료",
@@ -480,9 +487,18 @@ async function fetchDartFinancials(key: string, corpCode: string) {
 
         // 디버그용: 매출 후보 계정명만 일부 수집
         const revenueCandidates = list
-          .map((r) => (r.account_nm || "").trim())
-          .filter((x) => x && (x.includes("매출") || x.includes("수익") || x.toLowerCase().includes("revenue")))
-          .slice(0, 20);
+          .map((r) => {
+            const nm = (r.account_nm || "").trim();
+            if (!nm) return null;
+            const amount = readAmountFromRow(r);
+            return {
+              nm,
+              amount,
+            };
+          })
+          .filter((x) => x && (x.nm.includes("매출") || x.nm.includes("수익") || x.nm.toLowerCase().includes("revenue")))
+          .slice(0, 20)
+          .map((x) => `${x!.nm}=${x!.amount}`);
         const accountSample = list
           .map((r) => (r.account_nm || "").trim())
           .filter(Boolean)
